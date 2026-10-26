@@ -1,0 +1,119 @@
+# Maintainer: nogcio (https://github.com/nogcio)
+pkgname=herd-git
+pkgver=0.1.0.r0
+pkgrel=2
+pkgdesc='Local llama.cpp model manager with a native COSMIC window, applet and CLI'
+arch=('x86_64')
+url='https://github.com/nogcio/herd'
+# The combined executables include GPL-covered cosmic-panel-config.
+# Herd-authored source remains MIT; see the installed license bundle.
+license=('GPL-3.0-only')
+depends=('glibc' 'gcc-libs' 'bash' 'coreutils' 'dbus' 'systemd'
+         'fontconfig' 'freetype2' 'libxkbcommon' 'wayland' 'hicolor-icon-theme')
+makedepends=('cargo' 'git' 'pkgconf' 'jq' 'cargo-bundle-licenses')
+checkdepends=('desktop-file-utils' 'appstream')
+optdepends=('cosmic-panel: native panel companion'
+            'process-compose: router hosting (supported version: 1.122.0)'
+             'vulkan-icd-loader: GPU rendering with an installed Vulkan driver')
+provides=('herd')
+conflicts=('herd')
+source=("herd::git+${url}.git")
+sha256sums=('SKIP')
+# GCC's slim LTO objects in ring cannot be linked by Rust's LLVM linker.
+# Cargo still uses its standard optimized release profile.
+options=('!lto')
+
+pkgver() {
+    cd "$srcdir/herd"
+    local version count revision
+    version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)
+    count=$(git rev-list --count HEAD) || return
+    revision=$(git rev-parse --short HEAD) || return
+    printf '%s.r%s.g%s' "$version" "$count" "$revision"
+}
+
+prepare() {
+    cd "$srcdir/herd"
+    # Use Arch's compiler (or the user's stable rustup toolchain), not an
+    # implicit installation of the repository's CI toolchain.
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked
+}
+
+build() {
+    cd "$srcdir/herd"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR="$srcdir/target"
+    export CARGO_NET_OFFLINE=true
+    cargo build --frozen --release --features applet --bins
+    cargo bundle-licenses --features applet --format json --output "$srcdir/THIRD-PARTY.json"
+
+    # Supplement upstream packages whose manifests omit their governing text.
+    # Keep these mappings aligned with deny.toml and docs/third-party.md.
+    cargo metadata --frozen --features applet --format-version 1 > "$srcdir/metadata.json"
+    local entry name relative manifest
+    for entry in \
+        'cosmic-config:../LICENSE' \
+        'cosmic-config-derive:../LICENSE' \
+        'cosmic-theme:../LICENSE' \
+        'cosmic-settings-daemon:../LICENSE.md' \
+        'dnd:../LICENSE' \
+        'mime:../LICENSE' \
+        'iced_accessibility:../LICENSE' \
+        'xdg-shell-wrapper-config:src/lib.rs' \
+        'cosmic-panel-config:../LICENSE.md'; do
+        name=${entry%%:*}
+        relative=${entry#*:}
+        manifest=$(jq -er --arg name "$name" \
+            '.packages[] | select(.name == $name and (.source | startswith("git+"))) | .manifest_path' \
+            "$srcdir/metadata.json") || return
+        install -Dm644 "${manifest%/*}/$relative" "$srcdir/license-supplements/$name.txt" || return
+    done
+}
+
+check() {
+    cd "$srcdir/herd"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR="$srcdir/target"
+    export CARGO_NET_OFFLINE=true
+    # Isolated fixtures only; never activate an installed user service or model.
+    cargo test --frozen --workspace --features applet
+    desktop-file-validate resources/*.desktop
+    appstreamcli validate --no-net resources/*.metainfo.xml
+}
+
+package() {
+    cd "$srcdir/herd"
+    local binary resource
+    for binary in herd herd-service herd-status herd-cosmic herd-cosmic-applet; do
+        install -Dm755 "$srcdir/target/release/$binary" "$pkgdir/usr/bin/$binary" || return
+    done
+    for resource in resources/*.desktop; do
+        install -Dm644 "$resource" "$pkgdir/usr/share/applications/${resource##*/}" || return
+    done
+    install -Dm644 resources/io.github.nogcio.Herd.Cosmic.metainfo.xml \
+        "$pkgdir/usr/share/metainfo/io.github.nogcio.Herd.Cosmic.metainfo.xml"
+    install -Dm644 resources/icons/hicolor/scalable/apps/io.github.nogcio.Herd.Cosmic.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.nogcio.Herd.Cosmic.svg" || return
+    local size
+    for size in 16 24; do
+        install -Dm644 "resources/icons/hicolor/${size}x${size}/apps/io.github.nogcio.Herd.Cosmic-symbolic.svg" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/io.github.nogcio.Herd.Cosmic-symbolic.svg" || return
+    done
+    # Install a USER unit, not a system service. No enable/start/restart hooks.
+    install -Dm644 resources/herd.service "$pkgdir/usr/lib/systemd/user/herd.service"
+    sed -i 's|^ExecStart=herd-service$|ExecStart=/usr/bin/herd-service|' \
+        "$pkgdir/usr/lib/systemd/user/herd.service"
+    install -Dm644 resources/io.github.nogcio.Herd.Backend.service \
+        "$pkgdir/usr/share/dbus-1/services/io.github.nogcio.Herd.Backend.service"
+    sed -i 's|^Exec=herd-service$|Exec=/usr/bin/herd-service|' \
+        "$pkgdir/usr/share/dbus-1/services/io.github.nogcio.Herd.Backend.service"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/THIRD-PARTY.json" "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY.json"
+    install -Dm644 docs/third-party.md "$pkgdir/usr/share/licenses/$pkgname/third-party.md"
+    for resource in "$srcdir/license-supplements/"*.txt; do
+        install -Dm644 "$resource" "$pkgdir/usr/share/licenses/$pkgname/${resource##*/}" || return
+    done
+    # No files under /etc or $HOME: presets, preferences, weights and state
+    # remain service-owned user data, outside pacman's package inventory.
+}

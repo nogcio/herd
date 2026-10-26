@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+  <!-- SPDX-License-Identifier: MIT -->
+  <!-- Copyright (c) 2026 Herd contributors -->
+  <title>Herd symbolic</title>
+  <desc>Original Gather artwork, optically drawn for a 24-pixel panel icon.</desc>
+  <rect x="3" y="9" width="5" height="9" rx="2.5"/>
+  <rect x="10" y="3" width="5" height="15" rx="2.5"/>
+  <rect x="17" y="9" width="5" height="9" rx="2.5"/>
+  <rect x="3" y="20" width="19" height="2" rx="1"/>
+</svg>

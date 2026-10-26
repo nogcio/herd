@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none">
+  <!-- SPDX-License-Identifier: MIT -->
+  <!-- Copyright (c) 2026 Herd contributors -->
+  <title>Herd</title>
+  <desc>Original Gather artwork: three rounded model volumes gathered on one low plinth.</desc>
+  <defs>
+    <linearGradient id="a" x1="14" y1="9" x2="33" y2="37" gradientUnits="userSpaceOnUse"><stop stop-color="#8AD8D0"/><stop offset="1" stop-color="#32968F"/></linearGradient>
+    <linearGradient id="b" x1="4" y1="38" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#526979"/><stop offset="1" stop-color="#354956"/></linearGradient>
+  </defs>
+  <rect x="5" y="18" width="10" height="18" rx="5" fill="#438B95"/>
+  <rect x="33" y="18" width="10" height="18" rx="5" fill="#438B95"/>
+  <rect x="18" y="7" width="12" height="29" rx="6" fill="url(#a)"/>
+  <rect x="5" y="39" width="38" height="5" rx="2.5" fill="url(#b)"/>
+</svg>

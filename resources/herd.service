@@ -1,0 +1,14 @@
+[Unit]
+Description=Herd user-session management backend
+
+[Service]
+Type=dbus
+BusName=io.github.nogcio.Herd.Backend
+ExecStart=herd-service
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,112 @@
+[graph]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+version = 2
+# Maintenance-only acceptance; reviewed 2026-10-25, review by 2027-01-25.
+# Scope, residual risks and removal conditions: docs/third-party.md.
+unused-ignored-advisory = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz: pinned Iced/usvg SVG stack; maintenance-only. Review by 2027-01-25." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: native fonts/SVG/decorations; maintenance-only. Review by 2027-01-25." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: COSMIC still uses zbus 5; merged into zbus 6, not a reported vulnerability. Review by 2027-01-25." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: COSMIC still uses zbus 5; merged into zbus 6, not a reported vulnerability. Review by 2027-01-25." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: build-time macros in zbus 5 stack; maintenance-only. Review by 2027-01-25." },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.95
+allow = [
+    "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
+    "Unicode-3.0", "CC0-1.0", "CDLA-Permissive-2.0", "MPL-2.0", "Unlicense",
+]
+
+# Accept this copyleft dependency with distribution obligations, not globally.
+[[licenses.exceptions]]
+name = "cosmic-panel-config"
+version = "=1.11.0"
+allow = ["GPL-3.0-only"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Exact resolved commits are in Cargo.lock; some upstream manifests use tags/branches.
+allow-git = [
+    "https://github.com/kellpossible/cargo-i18n",
+    "https://github.com/iced-rs/cryoglyph.git",
+    "https://github.com/jackpot51/rust-atomicwrites",
+    "https://github.com/pop-os/cosmic-panel",
+    "https://github.com/pop-os/cosmic-protocols",
+    "https://github.com/pop-os/dbus-settings-bindings",
+    "https://github.com/pop-os/freedesktop-icons",
+    "https://github.com/pop-os/libcosmic",
+    "https://github.com/pop-os/smithay-clipboard",
+    "https://github.com/pop-os/softbuffer",
+    "https://github.com/pop-os/window_clipboard.git",
+    "https://github.com/pop-os/winit.git",
+    "https://github.com/wash2/accesskit",
+]
+
+# Exact-version metadata clarifications, not license-policy exceptions.
+# Repository-level texts and source revisions are documented in docs/third-party.md.
+# Hashes use cargo-deny 0.20.2's normalized-text XXH32 algorithm.
+[[licenses.clarify]]
+name = "cosmic-config"
+version = "=1.0.0"
+expression = "MPL-2.0"
+license-files = [{ path = "../LICENSE", hash = 0x3b6981e6 }]
+
+[[licenses.clarify]]
+name = "cosmic-config-derive"
+version = "=1.0.0"
+expression = "MPL-2.0"
+license-files = [{ path = "../LICENSE", hash = 0x3b6981e6 }]
+
+[[licenses.clarify]]
+name = "cosmic-theme"
+version = "=1.0.0"
+expression = "MPL-2.0"
+license-files = [{ path = "../LICENSE", hash = 0x3b6981e6 }]
+
+[[licenses.clarify]]
+name = "cosmic-settings-daemon"
+version = "=0.1.0"
+expression = "MPL-2.0"
+license-files = [{ path = "../LICENSE.md", hash = 0x0d4a6b51 }]
+
+[[licenses.clarify]]
+name = "dnd"
+version = "=0.1.0"
+expression = "MIT"
+license-files = [{ path = "../LICENSE", hash = 0xfd9601dd }]
+
+[[licenses.clarify]]
+name = "mime"
+version = "=0.1.0"
+expression = "MIT"
+license-files = [{ path = "../LICENSE", hash = 0xfd9601dd }]
+
+[[licenses.clarify]]
+name = "iced_accessibility"
+version = "=0.1.0"
+expression = "MIT"
+license-files = [{ path = "../LICENSE", hash = 0xa244f17c }]
+
+# The package's sole Rust source has an explicit MPL-2.0 SPDX notice;
+# do not apply the surrounding repository's GPL license to this marked file.
+[[licenses.clarify]]
+name = "xdg-shell-wrapper-config"
+version = "=1.11.0"
+expression = "MPL-2.0"
+license-files = [{ path = "src/lib.rs", hash = 0x3d8a194e }]
+
+# Unmarked package under the repository's GPL v3 text. No permissive grant
+# is inferred from neighboring MPL-marked files. See docs/third-party.md.
+[[licenses.clarify]]
+name = "cosmic-panel-config"
+version = "=1.11.0"
+expression = "GPL-3.0-only"
+license-files = [{ path = "../LICENSE.md", hash = 0x03092a70 }]

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Herd
+Name[ru]=Herd
+Comment=Model status and quick controls
+Comment[ru]=Состояние моделей и быстрое управление
+Type=Application
+Icon=io.github.nogcio.Herd.Cosmic
+Exec=herd-cosmic-applet
+Terminal=false
+Categories=Utility;COSMIC;
+OnlyShowIn=COSMIC;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto

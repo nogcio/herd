@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.nogcio.Herd.Cosmic</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Herd</name>
+  <summary>Manage local llama.cpp models with a COSMIC app and panel companion</summary>
+  <developer id="io.github.nogcio">
+    <name>Herd contributors</name>
+  </developer>
+  <description>
+    <p>Herd manages local models through llama.cpp native presets and router
+    controls. Its COSMIC application provides sidebar navigation and a model
+    settings drawer; the panel companion offers quick controls and status.</p>
+    <p>Process Compose hosts the router independently of UI lifetime. Existing
+    GGUF files are reused without implicit downloads or model eviction. Optional
+    NVIDIA metrics describe the whole GPU, not an individual model.</p>
+    <p>Public Hugging Face search and file review support explicitly confirmed
+    single-file GGUF downloads through llama.cpp, with progress, pause/resume and
+    integrity checks before loading. Downloading never starts inference.</p>
+  </description>
+  <icon type="stock">io.github.nogcio.Herd.Cosmic</icon>
+  <url type="homepage">https://github.com/nogcio/herd</url>
+  <url type="vcs-browser">https://github.com/nogcio/herd</url>
+  <url type="bugtracker">https://github.com/nogcio/herd/issues</url>
+  <launchable type="desktop-id">io.github.nogcio.Herd.Cosmic.desktop</launchable>
+  <provides>
+    <binary>herd-cosmic</binary>
+    <binary>herd-cosmic-applet</binary>
+    <binary>herd</binary>
+  </provides>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>COSMIC</keyword>
+    <keyword>models</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+</component>

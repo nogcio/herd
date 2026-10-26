@@ -1,0 +1,9 @@
+{
+  "server": "/opt/llama.cpp/llama-server",
+  "library_dirs": ["/opt/llama.cpp"],
+  "process_compose": "/opt/process-compose/process-compose",
+  "presets": "/absolute/configuration/path/models.ini",
+  "endpoint": "http://127.0.0.1:49173",
+  "state_dir": "/absolute/private/state/path",
+  "working_dir": "/absolute/working/directory"
+}

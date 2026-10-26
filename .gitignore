@@ -1,0 +1,24 @@
+/target/
+
+# Personal settings, credentials and local evidence are not project sources.
+/.env
+/.env.*
+/AGENTS.local.md
+/local/
+/artifacts/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+*.gguf
+*.safetensors
+/models/
+
+# Local makepkg outputs, not AUR recipe inputs.
+/packaging/aur/src/
+/packaging/aur/pkg/
+/packaging/aur/herd/
+/packaging/aur/*.pkg.tar.*
+/packaging/aur/*.src.tar.*
+/packaging/aur/*.log

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Herd
+Name[ru]=Herd
+Comment=Load and unload local llama.cpp models
+Comment[ru]=Управление локальными моделями llama.cpp
+Type=Application
+Icon=io.github.nogcio.Herd.Cosmic
+Exec=herd-cosmic
+Terminal=false
+Categories=Utility;COSMIC;
+OnlyShowIn=COSMIC;
+Keywords=AI;LLM;Models;COSMIC;
+StartupNotify=true
