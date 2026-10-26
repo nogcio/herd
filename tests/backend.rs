@@ -14,7 +14,15 @@ use tokio::{
 
 const INTERFACE: &str = "io.github.nogcio.Herd.Backend1";
 fn spawn_service(address: &str, config: &Path) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_herd-service"))
+    spawn_service_at(
+        Path::new(env!("CARGO_BIN_EXE_herd-service")),
+        address,
+        config,
+    )
+}
+
+fn spawn_service_at(executable: &Path, address: &str, config: &Path) -> Child {
+    Command::new(executable)
         .env("DBUS_SESSION_BUS_ADDRESS", address)
         .env("HERD_CONFIG", config)
         .stdin(Stdio::null())
@@ -23,6 +31,244 @@ fn spawn_service(address: &str, config: &Path) -> Child {
         .kill_on_drop(true)
         .spawn()
         .unwrap()
+}
+
+async fn private_bus(dir: &Path) -> (Child, String) {
+    let config = dir.join("update-bus.conf");
+    std::fs::write(&config, format!("<busconfig><type>session</type><listen>unix:tmpdir={}</listen><auth>EXTERNAL</auth><policy context=\"default\"><allow own=\"*\"/><allow send_destination=\"*\"/><allow receive_sender=\"*\"/></policy></busconfig>", dir.display())).unwrap();
+    let mut bus = Command::new("dbus-daemon")
+        .arg("--config-file")
+        .arg(config)
+        .args(["--nofork", "--nopidfile", "--print-address=1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let address = tokio::time::timeout(
+        Duration::from_secs(5),
+        BufReader::new(bus.stdout.take().unwrap())
+            .lines()
+            .next_line(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    (bus, address)
+}
+
+#[tokio::test]
+async fn coordinated_update_drains_work_retains_results_and_preserves_the_running_competitor() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = wiremock::MockServer::start().await;
+        let presets = dir.path().join("models.ini");
+        let weights = dir.path().join("competitor.gguf");
+        std::fs::write(&weights, b"GGUFexisting competitor").unwrap();
+        std::fs::write(
+            &presets,
+            format!(
+                "version = 1\n[competitor]\n; preserve this comment\nmodel = {}\nctx-size = 4096\n",
+                weights.display()
+            ),
+        )
+        .unwrap();
+        let observing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = observing.clone();
+        let observed_presets = presets.clone();
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/models"))
+            .respond_with(move |_: &wiremock::Request| {
+                let mut response =
+                    wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"data":[
+                        {"id":"competitor","status":{"value":"loaded"}},
+                        {"id":"example/tiny:Q8_0","source":"cache","status":{"value":"downloading"}}
+                    ]}));
+                if std::fs::read_to_string(&observed_presets)
+                    .unwrap()
+                    .contains("ctx-size = 8192")
+                {
+                    observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    response = response.set_delay(Duration::from_millis(800));
+                }
+                response
+            })
+            .mount(&runtime)
+            .await;
+        let config = dir.path().join("server.json");
+        let settings = Settings {
+            server: "/missing/llama-server".into(),
+            library_dirs: vec![],
+            process_compose: "/missing/process-compose".into(),
+            presets: presets.clone(),
+            endpoint: runtime.uri(),
+            state_dir: dir.path().join("state"),
+            working_dir: dir.path().into(),
+        };
+        std::fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let installed = dir.path().join("herd-service");
+        std::fs::copy(env!("CARGO_BIN_EXE_herd-service"), &installed).unwrap();
+        let (mut bus, address) = private_bus(dir.path()).await;
+        let mut service = spawn_service_at(&installed, &address, &config);
+        let connection = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let proxy = zbus::Proxy::new(&connection, NAME, PATH, INTERFACE)
+            .await
+            .unwrap();
+        ready(&proxy).await;
+        report_matching(&proxy, |report| {
+            report.models.iter().any(|m| m.state == "ready")
+        })
+        .await;
+        assert!(
+            !proxy
+                .call::<_, _, bool>("PrepareUpdate", &())
+                .await
+                .unwrap()
+        );
+        let draft: herd::backend::protocol::Configuration =
+            proxy.call("Configuration", &()).await.unwrap();
+        let id: String = proxy
+            .call(
+                "SetOption",
+                &("competitor", "ctx-size", "8192", draft.revision.as_str()),
+            )
+            .await
+            .unwrap();
+        while !observing.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let replacement = dir.path().join("replacement");
+        std::fs::copy(env!("CARGO_BIN_EXE_herd-service"), &replacement).unwrap();
+        std::fs::rename(replacement, &installed).unwrap();
+        let collision = config.with_file_name(".backend-update.json");
+        std::fs::write(&collision, b"preserve existing state").unwrap();
+        assert!(
+            proxy
+                .call::<_, _, bool>("PrepareUpdate", &())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            proxy
+                .call::<_, _, String>("UpdateStatus", &())
+                .await
+                .unwrap(),
+            "draining"
+        );
+        let rejected: zbus::Result<String> = proxy.call("Stop", &("competitor", true)).await;
+        assert!(rejected.is_err());
+        loop {
+            if proxy
+                .call::<_, _, String>("UpdateStatus", &())
+                .await
+                .unwrap()
+                == "failed"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(service.try_wait().unwrap().is_none());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"preserve existing state"
+        );
+        assert_eq!(wait_operation(&proxy, &id).await.status, "succeeded");
+        let draft: herd::backend::protocol::Configuration =
+            proxy.call("Configuration", &()).await.unwrap();
+        let after_failure: String = proxy
+            .call(
+                "SetOption",
+                &("competitor", "threads", "8", draft.revision.as_str()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            wait_operation(&proxy, &after_failure).await.status,
+            "succeeded"
+        );
+        std::fs::remove_file(&collision).unwrap();
+        let updater = Command::new(env!("CARGO_BIN_EXE_herd"))
+            .args(["--json", "backend-update"])
+            .env("DBUS_SESSION_BUS_ADDRESS", &address)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        assert!(service.wait().await.unwrap().success());
+        let saved = std::fs::read(&presets).unwrap();
+        assert!(String::from_utf8_lossy(&saved).contains("ctx-size = 8192"));
+        assert!(String::from_utf8_lossy(&saved).contains("; preserve this comment"));
+        // Change hosting preferences before activation. The handoff must retain
+        // the pinned host and the previous competitor observation, not retarget.
+        let mut changed = settings.clone();
+        changed.endpoint = "http://127.0.0.1:1".into();
+        std::fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let mut updated = spawn_service_at(&installed, &address, &config);
+        ready(&proxy).await;
+        let output = updater.wait_with_output().await.unwrap();
+        assert!(output.status.success());
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["data"]["backend"], "current");
+        let stale = report_matching(&proxy, |report| {
+            !report.error.is_empty() && report.models.iter().any(|m| m.state == "ready")
+        })
+        .await;
+        assert_eq!(stale.models[0].id, "competitor");
+        assert!(
+            stale
+                .models
+                .iter()
+                .any(|model| model.state == "downloading")
+        );
+        let completed: Operation = proxy.call("Operation", &(id.as_str(),)).await.unwrap();
+        assert_eq!(completed.status, "succeeded");
+        std::fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+        report_matching(&proxy, |report| {
+            report.error.is_empty() && report.revision > 0
+        })
+        .await;
+        assert!(
+            !proxy
+                .call::<_, _, bool>("PrepareUpdate", &())
+                .await
+                .unwrap()
+        );
+        assert_eq!(std::fs::read(&presets).unwrap(), saved);
+        assert_eq!(std::fs::read(&weights).unwrap(), b"GGUFexisting competitor");
+        assert!(
+            runtime
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method == "GET" && r.url.query().is_none())
+        );
+        // Only a coordinated update carries results. An ordinary later restart
+        // still invalidates old IDs rather than replaying any command.
+        updated.kill().await.unwrap();
+        updated.wait().await.unwrap();
+        let mut restarted = spawn_service_at(&installed, &address, &config);
+        ready(&proxy).await;
+        let unknown: zbus::Result<Operation> = proxy.call("Operation", &(id.as_str(),)).await;
+        assert!(unknown.is_err());
+        assert_eq!(std::fs::read(&presets).unwrap(), saved);
+        assert_eq!(std::fs::read(&weights).unwrap(), b"GGUFexisting competitor");
+        restarted.kill().await.unwrap();
+        restarted.wait().await.unwrap();
+        bus.kill().await.unwrap();
+        bus.wait().await.unwrap();
+    })
+    .await
+    .expect("Coordinated private-bus update timed out");
 }
 async fn wait_operation(proxy: &zbus::Proxy<'_>, id: &str) -> Operation {
     tokio::time::timeout(Duration::from_secs(10), async {

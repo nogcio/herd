@@ -14,6 +14,11 @@ change panel layout, or mutate user configuration. Presets, weights and state
 remain outside package ownership. Users explicitly coordinate upgrades with
 their active clients and operations.
 
+Arch's standard hook reloads user-manager unit metadata. After the transaction,
+frontend startup requests a [coordinated backend update](0007-backend-update.md)
+through the existing management API. Systemd owns restarting that service;
+neither package scripts nor frontends launch replacement daemon processes.
+
 Package source licensing remains distinct from combined binary obligations.
 Use upstream license aggregation plus the reviewed missing-metadata texts; keep
 the locked source revision and corresponding-source obligations reviewable.

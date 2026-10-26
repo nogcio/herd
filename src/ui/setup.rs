@@ -20,6 +20,7 @@ pub enum Field {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cosmic::Application;
     use herd::backend::protocol::{Operation, Report};
 
     fn management() -> Applet {
@@ -27,6 +28,21 @@ mod tests {
             mode: super::super::Mode::Management,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn failed_update_connection_needs_explicit_refresh_not_notification_replay() {
+        let mut app = management();
+        let task = app.update(Message::Connected(Err("Backend update failed".into())));
+        assert_eq!(task.units(), 0);
+        let task = app.update(Message::ConfigurationChanged);
+        assert_eq!(task.units(), 0);
+        assert!(!app.connecting);
+        assert_eq!(app.error.as_deref(), Some("Backend update failed"));
+        let task = app.update(Message::Refresh);
+        assert!(task.units() > 0);
+        assert!(app.connecting);
+        assert!(app.error.is_none());
     }
 
     fn ready() -> Report {

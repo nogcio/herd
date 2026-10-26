@@ -57,6 +57,9 @@ installed Herd cannot be activated by the test's startup race.
 | Unpinned executable probes and unchanged weights/competitors | `hosting`, bounded fake executables |
 | One-shot window setup/startup; passive panel and failed-start non-replay | `ui::setup` |
 | Shared concurrent startup and responsive-host preservation | `backend::service`, `controller` |
+| Coordinated update drain, failed handoff, restored results and unchanged competitors/transfers | `tests/backend.rs`, private bus and HTTP mocks |
+| Executable identity, private bounded one-shot handoff and terminal-only results | `backend::update` |
+| Update owner replacement, version validation and read-only waiter reconnection | `backend`, private bus |
 
 Keep private invariants in their owning module. Fixtures support production
 contracts; they are not another test suite. Do not duplicate generic upstream

@@ -113,7 +113,8 @@ pub struct Report {
 /// Service-owned mutation, retained independently of connected clients.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Operation {
-    /// Instance-qualified identity; invalid after a service restart.
+    /// Instance-qualified identity; retained across a coordinated backend update.
+    /// An ordinary restart or eviction from bounded history invalidates it.
     pub id: String,
     /// Concrete operation name.
     pub kind: String,

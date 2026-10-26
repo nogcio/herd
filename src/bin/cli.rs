@@ -17,6 +17,8 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Apply an installed backend update without restarting inference.
+    BackendUpdate,
     /// Check executable versions and create first-run preferences from an input file.
     Setup { settings: std::path::PathBuf },
     /// Register an existing GGUF without copying or loading it.
@@ -120,8 +122,13 @@ async fn main() -> std::process::ExitCode {
     }
 }
 async fn run(command: Command) -> anyhow::Result<serde_json::Value> {
-    let c = Client::connect().await?;
+    let c = if matches!(&command, Command::BackendUpdate) {
+        Client::connect_current().await?
+    } else {
+        Client::connect().await?
+    };
     let id = match command {
+        Command::BackendUpdate => return Ok(json!({"backend":"current"})),
         Command::Status => return Ok(serde_json::to_value(c.report().await?)?),
         Command::Operation { id } => return Ok(serde_json::to_value(c.operation(&id).await?)?),
         Command::Config => return Ok(serde_json::to_value(c.configuration().await?)?),

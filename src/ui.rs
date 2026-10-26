@@ -184,7 +184,7 @@ impl std::fmt::Debug for Message {
 }
 
 async fn connect() -> Result<Arc<Client>, String> {
-    Client::connect()
+    Client::connect_current()
         .await
         .map(Arc::new)
         .map_err(|error| error.to_string())
@@ -523,7 +523,7 @@ impl cosmic::Application for Applet {
                 if self.controller.is_some() {
                     return self.refresh();
                 }
-                if !self.connecting {
+                if !self.connecting && self.error.is_none() {
                     self.connecting = true;
                     return Task::perform(connect(), |r| {
                         cosmic::Action::App(Message::Connected(r))

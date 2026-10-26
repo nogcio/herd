@@ -42,6 +42,14 @@ is a presentation input, not management authority. Each client call checks API
 version 1 against the unique bus owner receiving the requested method;
 owner loss fails the call without replaying it.
 
+Frontend startup additionally requests a coordinated update if the installed
+management executable replaced the running one. The backend closes mutation
+admission, completes accepted work, and writes a private one-shot handoff of
+terminal results and pinned host observations. The user service restarts under
+systemd, consumes that handoff only after acquiring the bus name, and reobserves
+the unchanged router. CLI observation remains passive. See
+[backend updates](decisions/0007-backend-update.md).
+
 ## Configuration authority
 
 Native INI presets are the only model settings source. `server.json` specifies

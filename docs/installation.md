@@ -87,12 +87,31 @@ first-run setup or window startup.
 ## Updates and previous user-local installations
 
 Save drafts, close the application and remove its running panel applet before
-updating. Wait for accepted backend operations to finish and do not submit new
-operations during the package transaction. The package does not police active
-sessions or automatically replace a running process. After updating, reload the
-user manager's metadata and explicitly restart only the management backend when
-it is safe to do so; re-add the panel applet. Never stop the router as an update
-step. A logout can affect inference and is not a safe substitute.
+updating. Do not submit operations during the package transaction. Once the
+transaction finishes, reopen the window or re-add the applet. The frontend asks
+the existing backend to check its installed executable. An unchanged executable
+does not trigger a restart. If it was replaced, the backend stops admitting new
+mutations, finishes accepted work and hands off bounded terminal results and its
+pinned host observations. Systemd restarts only the management service; clients
+reconnect without replaying operations. Router inference and native transfers
+continue in their independent scope. See the
+[coordinated update contract](decisions/0007-backend-update.md).
+
+Arch's standard systemd hook rereads user-unit metadata after installation; Herd
+adds no root-run service-restart hook. Frontend startup waits up to 120 seconds
+for a coordinated update. A timeout does not cancel work or repeat its request;
+reopen the frontend after the pending work completes. If the handoff cannot be
+saved, the old backend stays alive and resumes normal admission with an update
+error. No router stop or logout is an update step.
+
+For headless maintenance, `herd --json backend-update` requests the same
+management-only transition. Ordinary status/configuration commands remain
+passive and do not request updates.
+
+The first installation over a backend predating this protocol needs a one-time
+restart of `herd.service`, after accepted operations finish. This bootstraps
+future frontend-coordinated updates; it is not a compatibility fallback that
+terminates an unknown older process automatically.
 
 Previous user-local executables and desktop/D-Bus/systemd registrations can
 shadow `/usr` package files. Pacman deliberately does not remove files from

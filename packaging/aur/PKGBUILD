@@ -1,7 +1,7 @@
 # Maintainer: nogcio (https://github.com/nogcio)
 pkgname=herd-git
 pkgver=0.1.0.r0
-pkgrel=3
+pkgrel=4
 pkgdesc='Local llama.cpp model manager with a native COSMIC window, applet and CLI'
 arch=('x86_64')
 url='https://github.com/nogcio/herd'

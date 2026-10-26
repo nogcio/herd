@@ -1,5 +1,5 @@
 //! Single user-session owner for management mutations and common observations.
-use super::{NAME, PATH, protocol::*};
+use super::{NAME, PATH, protocol::*, update};
 use crate::{
     config::{self, Presets, Settings},
     controller::Controller,
@@ -15,7 +15,10 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use zbus::{fdo, object_server::SignalEmitter};
+use zbus::{
+    fdo,
+    object_server::{ResponseDispatchNotifier, SignalEmitter},
+};
 
 struct Store {
     preferences: Option<Settings>,
@@ -24,6 +27,9 @@ struct Store {
     instance: String,
     sequence: u64,
     progress: BTreeMap<String, (u64, u64)>,
+    initialized: bool,
+    updating: bool,
+    update_failed: bool,
 }
 impl Store {
     fn observe_models(&mut self, mut models: Vec<ModelRecord>) {
@@ -47,11 +53,17 @@ impl Store {
 struct Shared {
     store: Mutex<Store>,
     observing: tokio::sync::Mutex<()>,
+    initialized: tokio::sync::Notify,
+    update_requested: tokio::sync::Notify,
+    completed: tokio::sync::Notify,
 }
 impl Shared {
     fn new() -> Self {
         Self {
             observing: tokio::sync::Mutex::new(()),
+            initialized: tokio::sync::Notify::new(),
+            update_requested: tokio::sync::Notify::new(),
+            completed: tokio::sync::Notify::new(),
             store: Mutex::new(Store {
                 preferences: None,
                 report: Report {
@@ -68,15 +80,31 @@ impl Shared {
                 ),
                 sequence: 0,
                 progress: BTreeMap::new(),
+                initialized: true,
+                updating: false,
+                update_failed: false,
             }),
         }
     }
     fn store(&self) -> std::sync::MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
+    fn prepare_update(&self, replaced: bool) -> Result<(bool, bool)> {
+        let mut store = self.store();
+        ensure!(store.initialized, "Backend initialization is in progress");
+        let start = replaced && !store.updating;
+        if start {
+            store.updating = true;
+            store.update_failed = false;
+        } else if !store.updating {
+            store.update_failed = false;
+        }
+        Ok((store.updating, start))
+    }
     fn controller(&self, allow_previous_host: bool) -> Result<Controller> {
         let current = Settings::read();
         let mut store = self.store();
+        ensure!(store.initialized, "Backend initialization is in progress");
         if let Some(previous) = &store.preferences {
             ensure!(
                 allow_previous_host || current.as_ref().is_ok_and(|s| s == previous),
@@ -93,6 +121,11 @@ impl Shared {
             config::validate_id(model)?;
         }
         let mut s = self.store();
+        ensure!(s.initialized, "Backend initialization is in progress");
+        ensure!(
+            !s.updating,
+            "Backend update is draining accepted work; no new operation was admitted"
+        );
         if kind == "server-up"
             && let Some(job) = s
                 .jobs
@@ -248,6 +281,7 @@ fn confirmation(confirmed: bool) -> fdo::Result<()> {
 
 struct Service {
     shared: Arc<Shared>,
+    executable: Arc<update::Executable>,
 }
 impl Service {
     fn submit(
@@ -279,6 +313,7 @@ impl Service {
             observe(&shared, &emitter).await;
             let operation = shared.complete(&id, result);
             let _ = Self::operation_changed(&emitter, operation).await;
+            shared.completed.notify_one();
         });
         Ok(result_id)
     }
@@ -286,8 +321,39 @@ impl Service {
 
 #[zbus::interface(name = "io.github.nogcio.Herd.Backend1")]
 impl Service {
-    fn version(&self) -> u32 {
-        1
+    async fn version(&self) -> u32 {
+        loop {
+            let ready = self.shared.initialized.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            if self.shared.store().initialized {
+                return 1;
+            }
+            ready.await;
+        }
+    }
+    fn prepare_update(&self) -> fdo::Result<ResponseDispatchNotifier<bool>> {
+        let replacement = self.executable.replacement().map_err(failure)?;
+        let (requested, start) = self.shared.prepare_update(replacement).map_err(failure)?;
+        let (response, dispatched) = ResponseDispatchNotifier::new(requested);
+        if start {
+            let shared = self.shared.clone();
+            tokio::spawn(async move {
+                dispatched.await;
+                shared.update_requested.notify_one();
+            });
+        }
+        Ok(response)
+    }
+    fn update_status(&self) -> &str {
+        let store = self.shared.store();
+        if store.update_failed {
+            "failed"
+        } else if store.updating {
+            "draining"
+        } else {
+            "current"
+        }
     }
     async fn removal_plan(&self, model: &str) -> fdo::Result<RemovalPlan> {
         config::validate_id(model).map_err(failure)?;
@@ -603,12 +669,25 @@ async fn progress_events(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
 }
 
 pub(super) async fn serve() -> Result<()> {
+    let executable = Arc::new(update::Executable::current()?);
+    let handoff_path = update::path()?;
+    let handoff = update::load(&handoff_path)?;
     let shared = Arc::new(Shared::new());
+    {
+        let mut store = shared.store();
+        store.initialized = false;
+        if let Some((handoff, _)) = &handoff {
+            store.preferences = handoff.preferences.clone();
+            store.report.models = handoff.report.models.clone();
+            store.jobs = handoff.report.operations.iter().cloned().collect();
+        }
+    }
     let connection = zbus::connection::Builder::session()?
         .serve_at(
             PATH,
             Service {
                 shared: shared.clone(),
+                executable: executable.clone(),
             },
         )?
         .build()
@@ -616,6 +695,11 @@ pub(super) async fn serve() -> Result<()> {
     connection
         .request_name_with_flags(NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
         .await?;
+    if let Some((_, bytes)) = handoff {
+        update::consume(&handoff_path, &bytes)?;
+    }
+    shared.store().initialized = true;
+    shared.initialized.notify_waiters();
     let emitter = SignalEmitter::new(&connection, PATH)?;
     let progress = tokio::spawn(progress_events(shared.clone(), emitter.to_owned()));
     let watch_shared = shared.clone();
@@ -639,11 +723,54 @@ pub(super) async fn serve() -> Result<()> {
         }
     });
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! { _ = terminate.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
+    loop {
+        tokio::select! {
+            _ = terminate.recv() => break,
+            _ = tokio::signal::ctrl_c() => break,
+            _ = shared.update_requested.notified() => {
+                if !shared.store().updating {
+                    continue;
+                }
+                loop {
+                    let completed = shared.completed.notified();
+                    if !shared.store().jobs.iter().any(|job| job.status == "running") {
+                        break;
+                    }
+                    completed.await;
+                }
+                let updating = shared.clone();
+                let installed = executable.clone();
+                let path = handoff_path.clone();
+                let result = blocking(move || {
+                    ensure!(installed.replacement()?, "Installed management executable no longer needs replacement");
+                    let store = updating.store();
+                    let mut report = store.report.clone();
+                    report.operations = store.jobs.iter().cloned().collect();
+                    let handoff = update::Handoff {
+                        version: 1,
+                        preferences: store.preferences.clone(),
+                        report,
+                    };
+                    drop(store);
+                    update::save(&path, &handoff)
+                }).await;
+                match result {
+                    Ok(()) => break,
+                    Err(error) => eprintln!("Backend update failed: {error}"),
+                }
+                let mut store = shared.store();
+                store.updating = false;
+                store.update_failed = true;
+            }
+        }
+    }
     observer.abort();
     progress.abort();
+    let _ = observer.await;
+    let _ = progress.await;
+    drop(emitter);
     // No inference shutdown, compensating unload, or command replay on exit.
-    drop(connection);
+    let _ = tokio::time::timeout(Duration::from_secs(10), connection.graceful_shutdown()).await;
     Ok(())
 }
 
@@ -777,5 +904,43 @@ mod tests {
         let (retry, accepted) = shared.accept("server-up", "").unwrap();
         assert!(accepted);
         assert_ne!(first.id, retry.id);
+    }
+
+    #[test]
+    fn draining_blocks_new_work_without_cancelling_the_accepted_operation() {
+        let shared = Shared::new();
+        let (accepted, _) = shared.accept("set", "example").unwrap();
+        let competitor = ModelRecord {
+            id: "competitor".into(),
+            state: "ready".into(),
+            ..Default::default()
+        };
+        shared.store().report.models.push(competitor.clone());
+        shared.store().updating = true;
+        for kind in ["server-up", "start", "stop", "setup", "download"] {
+            assert!(shared.accept(kind, "").is_err());
+        }
+        assert_eq!(shared.store().jobs.len(), 1);
+        assert_eq!(shared.store().jobs[0], accepted);
+        shared.complete(&accepted.id, Ok(()));
+        assert_eq!(shared.store().jobs[0].status, "succeeded");
+        assert_eq!(shared.store().report.models, [competitor]);
+        shared.store().updating = false;
+        assert!(shared.accept("set", "example").is_ok());
+    }
+
+    #[test]
+    fn concurrent_update_callers_schedule_one_drain_and_failure_needs_a_new_request() {
+        let shared = Shared::new();
+        assert_eq!(shared.prepare_update(false).unwrap(), (false, false));
+        assert_eq!(shared.prepare_update(true).unwrap(), (true, true));
+        assert_eq!(shared.prepare_update(true).unwrap(), (true, false));
+        assert!(shared.store().jobs.is_empty());
+        shared.store().updating = false;
+        shared.store().update_failed = true;
+        assert!(shared.accept("set", "example").is_ok());
+        assert!(!shared.store().updating);
+        assert!(shared.store().update_failed);
+        assert_eq!(shared.prepare_update(true).unwrap(), (true, true));
     }
 }

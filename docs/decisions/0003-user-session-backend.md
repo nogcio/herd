@@ -49,9 +49,12 @@ lifetime or authorize implicit resume.
 
 The backend retains at most 64 operations in memory, with instance-qualified IDs
 and running/succeeded/failed outcomes. There is no durable command queue.
-Restart does not replay anything: old/expired IDs produce an explicit
-unknown-outcome error. A failed call or lost acknowledgement is not proof that
-no mutation occurred. Clients must observe state before an explicit retry.
+Restart does not replay anything. A coordinated executable update transfers
+terminal results to its replacement; an ordinary restart or history eviction
+still makes old IDs produce an explicit unknown-outcome error. A failed call or
+lost acknowledgement is not proof that no mutation occurred. Clients must
+observe state before an explicit retry. See
+[coordinated backend updates](0007-backend-update.md).
 
 ## Observation and lifetime
 

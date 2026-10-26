@@ -118,6 +118,11 @@ Directly running `herd-cosmic-applet` does not place it in the panel.
 **Manage models…** opens or activates the standalone window. Installation does
 not enable login autostart or change your panel layout. Pacman owns application
 installation and updates; preferences, presets and weights remain user data.
+After an update, reopen the window or re-add the applet. Herd coordinates an
+outdated backend's replacement after accepted operations finish, without
+restarting the router or models. The first upgrade from a backend without this
+protocol needs a one-time management-service restart; see
+[updates](docs/installation.md#updates-and-previous-user-local-installations).
 
 See the [user guide](docs/usage.md) for setup, settings and CLI details, or
 [native presets](docs/presets.md) for manual configuration.
