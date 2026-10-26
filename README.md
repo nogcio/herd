@@ -49,8 +49,9 @@ native GPU placement and context settings remain available in the preset editor.
 
 ### Deliberate boundaries
 
-Opening Herd, checking status, selecting a model, or saving settings never
-starts inference or downloads weights. Normal loads run offline: missing weights
+Opening the management window starts the configured empty router, never a model
+or download. Checking status, selecting a model, and saving settings remain
+passive. Normal loads run offline: missing weights
 fail rather than trigger a download. Download completion never loads a model.
 
 Hosting requires automatic llama.cpp configuration to be absent at the system
@@ -78,11 +79,12 @@ readiness.
 
 ## Build, install and open
 
-Herd requires a session D-Bus and systemd user manager. Its supported external
-runtime versions are **llama.cpp b11856 / `3642238cc`** and **Process Compose
-v1.122.0**. Herd checks those versions; arbitrary newer builds are not
-automatically compatible. It does not install the runtime, CUDA or Process
-Compose for you.
+Herd requires a session D-Bus and systemd user manager. Install llama.cpp
+separately with `llama-server` on `PATH`; choose its CPU, CUDA or Vulkan variant
+for your hardware. The Herd package depends on Process Compose. Neither
+executable is version-pinned. The reference contract was reviewed against
+llama.cpp b11856 / `3642238cc` and Process Compose v1.122.0; other versions are
+accepted, not automatically certified compatible. Herd installs no GPU drivers.
 
 To build the current source without installing or launching Herd, first review
 the [development prerequisites](CONTRIBUTING.md#prerequisites), then run:
@@ -105,11 +107,11 @@ makepkg --cleanbuild
 After reviewing and installing the package through your package manager:
 
 1. Open **Herd** from the application menu, or run `herd-cosmic`.
-2. Select the already installed runtime executables in first-run setup. Setup
-   checks their versions and creates missing configuration without overwriting
-   existing files.
-3. Import a local GGUF or review a download. Choose **Start router**, then
-   explicitly **Load** a model when ready.
+2. Herd detects installed executables, initializes missing configuration and
+   starts the empty router. For a nonstandard installation, select the
+   executables in runtime setup. Existing files are not overwritten.
+3. Import a local GGUF or review a download, then explicitly **Load** a model
+   when ready. Failed router startup offers **Start router** for a manual retry.
 
 For the optional panel companion, run `cosmic-settings panel` and add **Herd**.
 Directly running `herd-cosmic-applet` does not place it in the panel.

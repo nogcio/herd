@@ -72,6 +72,9 @@ symlinks resolving to regular files remain supported.
 ## Admission and lifetime
 
 - Construction and observation do not start a server, model, or download.
+  Opening the management window requests empty-router startup once after valid
+  setup; this is a service-owned operation, not a side effect of status
+  observation.
 - One service-owned mutation is admitted at a time, independently of connected
   clients. The existing private file lock additionally protects runtime
   admission.
@@ -108,10 +111,16 @@ launcher sets `umask 077`; user paths are passed as quoted arguments. Dotenv,
 command rendering, implicit restarts, and file-triggered restarts are disabled.
 Process Compose's template-disable setting applies only to commands, not working
 directories, log locations or environment entries. Rendered path/environment
-values containing `{{` or `}}` are unsupported and rejected before launch.
-Host shutdown uses a private Unix socket, not process-name searches or PID
-files. Only explicit host startup invokes `systemd-run --user --scope`; backend
-activation and restart never start a router or replay a previous command.
+values containing `{{` or `}}` are unsupported and rejected before launch. Host
+shutdown uses a private Unix socket, not process-name searches or PID files.
+Host startup invokes `systemd-run --user --scope`; backend activation and
+restart never start a router or replay a previous command. The window requests
+startup once per launch, including after first-run setup. Concurrent requests
+share an in-flight startup. A responsive router with matching host identity is
+retained without reload, unload or restart. Failures require a manual retry;
+timers and watcher events do not supervise or resurrect the host. The panel and
+CLI remain passive until an explicit action. See
+[startup and runtime dependencies](decisions/0006-runtime-startup.md).
 
 ## Automatic native configuration
 
@@ -184,8 +193,13 @@ inference presets. See the [acquisition contract](downloads.md).
 
 ## Verified dependency boundary
 
-The supported llama.cpp build is b11856, commit `3642238cc`; startup checks its
-version. Process Compose v1.122.0 owns daemon/IPC/termination mechanisms. Cargo
+The reviewed reference llama.cpp build is b11856, commit `3642238cc`; Process
+Compose v1.122.0 defines the reviewed daemon/IPC/termination mechanisms. Neither
+version is an admission requirement: executable probes check successful exit,
+not a version string. Other builds can have incompatible flags or API semantics;
+accepting their version is not verification of offline/autoload/eviction safety
+on those builds. Management transport still validates responses and never
+falls back to a different lifecycle policy. Cargo
 dependencies are pinned by Cargo.lock. Source and license/advisory checks remain
 separate from compilation. See [third-party obligations](third-party.md).
 

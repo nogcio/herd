@@ -54,6 +54,9 @@ installed Herd cannot be activated by the test's startup race.
 | Automatic-config presence/inspection failures before probes and launch | `hosting`, isolated paths and bounded fake executables |
 | Frozen host config/cache identity and child-dispatch admission | `hosting`, `controller`, isolated files/HTTP mocks |
 | Rendered Process Compose template-delimiter rejection | `hosting`, bounded fake executables |
+| Unpinned executable probes and unchanged weights/competitors | `hosting`, bounded fake executables |
+| One-shot window setup/startup; passive panel and failed-start non-replay | `ui::setup` |
+| Shared concurrent startup and responsive-host preservation | `backend::service`, `controller` |
 
 Keep private invariants in their owning module. Fixtures support production
 contracts; they are not another test suite. Do not duplicate generic upstream
@@ -92,6 +95,11 @@ things; none is a substitute for actual input and rendered frames.
   real transfer merely to test navigation. Progress tests without a live
   transfer establish transport/state handling, not live bandwidth or visual
   acceptance.
+- With separately installed runtimes and absent preferences, open the window:
+  detect executables, initialize missing settings and start an empty router.
+  Reopen against a running model: no reload, unload or restart. Missing binaries
+  must show setup; failed startup must remain actionable without timer/reconnect
+  retries. These live host checks require explicit authorization.
 - Check pending resume review feedback and leave/return before its completion:
   a late result must not reopen a dialog. Escape from dirty-close/reload keeps
   values and cancels pending window close. Check populated setup labels and

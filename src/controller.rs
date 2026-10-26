@@ -29,8 +29,15 @@ impl Controller {
             settings,
         })
     }
-    /// Explicit router startup with fresh preference admission, not a model load.
+    /// Ensure router availability without restarting or loading any model.
     pub async fn start_router(&self) -> Result<()> {
+        Presets::read(&self.settings.presets)?;
+        // A second window/client may request startup after the first has
+        // completed. Never replace a responsive router or touch its children.
+        if self.runtime.list().await.is_ok() {
+            hosting::admit_runtime_configuration(&self.settings)?;
+            return Ok(());
+        }
         hosting::up(&self.settings).await
     }
     /// Show configured profiles immediately, plus any router cache entries.
@@ -501,6 +508,53 @@ mod tests {
         std::os::unix::fs::symlink(&blob, snapshot.join(&plan.filename)).unwrap();
         blob
     }
+    #[tokio::test]
+    async fn router_start_preserves_a_responsive_host_and_all_competitors() {
+        let (dir, server, c) = setup().await;
+        let original = std::fs::read(&c.settings.presets).unwrap();
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[
+                {"id":"other","status":{"value":"loaded"}},
+                {"id":"a","status":{"value":"unloaded"}}
+            ]})))
+            .mount(&server)
+            .await;
+        for _ in 0..2 {
+            c.start_router().await.unwrap();
+        }
+        assert_eq!(std::fs::read(&c.settings.presets).unwrap(), original);
+        assert_eq!(
+            std::fs::read(dir.path().join("a.gguf")).unwrap(),
+            b"GGUFfixture"
+        );
+        assert_eq!(
+            c.snapshot()
+                .await
+                .unwrap()
+                .iter()
+                .find(|s| s.model.id == "other")
+                .unwrap()
+                .state,
+            State::Ready
+        );
+        // Missing host identity and invalid configuration must not be repaired
+        // by replacing an existing router, even when a window requests startup.
+        std::fs::remove_file(c.settings.state_dir.join("cache-root.json")).unwrap();
+        assert!(c.start_router().await.is_err());
+        std::fs::write(&c.settings.presets, "invalid").unwrap();
+        assert!(c.start_router().await.is_err());
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method == "GET" && r.url.query().is_none())
+        );
+        assert!(!c.settings.state_dir.join("process-compose.yaml").exists());
+    }
+
     #[tokio::test]
     async fn observation_never_reloads_or_mutates_and_shows_new_profiles() {
         let (_dir, server, c) = setup().await;

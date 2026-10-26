@@ -22,10 +22,12 @@ acquisition.
 
 ## Runtime contract
 
-The supported server is b11856, commit `3642238cc`; the
-[pinned native documentation][server] and source define the API. Process Compose
-v1.122.0 supplies the hosting contract. Native presets own per-model parameters;
-hosting preferences only identify binaries, paths and the loopback endpoint.
+The reference server is b11856, commit `3642238cc`; the
+[reviewed native documentation][server] and source define the API. Process
+Compose v1.122.0 supplies the reviewed hosting contract. Installed executable
+versions are not pinned; see [runtime startup](0006-runtime-startup.md). Native
+presets own per-model parameters; hosting preferences only identify binaries,
+paths and the loopback endpoint.
 
 `GET /models` is passive. The application only calls `?reload=1` within explicit
 start admission after observing all models stopped, since source changes can

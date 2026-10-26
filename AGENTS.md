@@ -34,8 +34,10 @@ unchanged.
   Process Compose router in an independent user scope so backend stop/restart
   cannot terminate inference or downloads through inherited cgroup membership.
 - Verify third-party APIs and features against exact Cargo.lock sources. Git
-  dependencies may differ from published rustdoc/latest versions. Pin and verify
-  the supported llama.cpp build and management API before relying on it.
+  dependencies may differ from published rustdoc/latest versions. Keep the
+  reviewed llama.cpp/Process Compose reference contract explicit, but do not
+  reject installed runtimes solely by version. Do not claim arbitrary installed
+  versions are verified; retain response and lifecycle admission checks.
 - New dependencies, crates, and public APIs need a real responsibility/consumer.
   Prefer ordinary cohesive modules in one runtime package over facades, a
   universal backend, speculative plugins, or an artificial workspace.

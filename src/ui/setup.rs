@@ -17,6 +17,130 @@ pub enum Field {
     Id,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use herd::backend::protocol::{Operation, Report};
+
+    fn management() -> Applet {
+        Applet {
+            mode: super::super::Mode::Management,
+            ..Default::default()
+        }
+    }
+
+    fn ready() -> Report {
+        Report {
+            revision: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn window_requests_router_once_without_replaying_after_failure_or_reconnect() {
+        let mut app = management();
+        assert!(matches!(
+            app.startup_action(&ready()),
+            Some(Message::ServerUp)
+        ));
+        app.error = Some("Startup failed".into());
+        app.controller = None;
+        for report in [Report::default(), ready(), ready()] {
+            assert!(app.startup_action(&report).is_none());
+        }
+        assert!(Applet::default().startup_action(&ready()).is_none());
+        assert!(app.snapshots.is_empty());
+    }
+
+    #[test]
+    fn configured_window_never_reinitializes_deleted_preferences_after_reconnect() {
+        let mut app = management();
+        let binary = tempfile::NamedTempFile::new().unwrap();
+        app.setup.server = binary.path().to_string_lossy().into_owned();
+        app.setup.compose = app.setup.server.clone();
+        assert!(matches!(
+            app.startup_action(&ready()),
+            Some(Message::ServerUp)
+        ));
+        app.controller = None;
+        let missing = Report {
+            setup_required: true,
+            ..ready()
+        };
+        assert!(app.startup_action(&missing).is_none());
+        assert_eq!(app.navigation.page, super::super::navigation::Page::Models);
+        assert!(app.startup_action(&ready()).is_none());
+    }
+
+    #[test]
+    fn invalid_configuration_requires_explicit_retry_even_after_file_repair() {
+        let mut app = management();
+        let mut report = ready();
+        report.error = "Invalid configuration".into();
+        assert!(app.startup_action(&report).is_none());
+        report.error.clear();
+        assert!(app.startup_action(&report).is_none());
+        report.setup_required = true;
+        assert!(app.startup_action(&report).is_none());
+    }
+
+    #[test]
+    fn startup_waits_for_no_other_operation_without_changing_it() {
+        let mut app = management();
+        let mut report = ready();
+        report.operations.push(Operation {
+            status: "running".into(),
+            kind: "download".into(),
+            ..Default::default()
+        });
+        assert!(app.startup_action(&report).is_none());
+        report.operations.clear();
+        app.busy = true;
+        assert!(app.startup_action(&report).is_none());
+        app.busy = false;
+        assert!(matches!(
+            app.startup_action(&report),
+            Some(Message::ServerUp)
+        ));
+    }
+
+    #[test]
+    fn missing_preferences_use_detected_binaries_once_then_start_only_after_setup() {
+        let mut app = management();
+        let binary = tempfile::NamedTempFile::new().unwrap();
+        app.setup.server = binary.path().to_string_lossy().into_owned();
+        app.setup.compose = app.setup.server.clone();
+        let report = Report {
+            setup_required: true,
+            ..ready()
+        };
+        assert!(matches!(
+            app.startup_action(&report),
+            Some(Message::Setup(Event::Save))
+        ));
+        assert!(!app.router_start_requested);
+        assert!(app.startup_action(&report).is_none());
+        assert!(matches!(
+            app.startup_action(&ready()),
+            Some(Message::ServerUp)
+        ));
+    }
+
+    #[test]
+    fn missing_runtime_keeps_manual_setup_available_without_starting() {
+        let mut app = management();
+        app.setup.server.clear();
+        let report = Report {
+            setup_required: true,
+            ..ready()
+        };
+        assert!(app.startup_action(&report).is_none());
+        assert!(app.setup_requested);
+        assert!(!app.router_start_requested);
+        assert!(!app.busy);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Edit(Field, String),
@@ -64,10 +188,48 @@ impl Default for Form {
 }
 
 impl Applet {
+    pub(super) fn startup_action(
+        &mut self,
+        report: &herd::backend::protocol::Report,
+    ) -> Option<Message> {
+        if self.mode != super::Mode::Management
+            || self.busy
+            || report.revision == 0
+            || self.router_start_requested
+            || report.operations.iter().any(|o| o.status == "running")
+        {
+            return None;
+        }
+        if report.setup_required {
+            if self.setup_requested {
+                return None;
+            }
+            self.setup_requested = true;
+            self.select_page(super::navigation::Page::Setup);
+            // Only initialize missing preferences; the service validates and
+            // probes both binaries and preserves any existing native presets.
+            return [&self.setup.server, &self.setup.compose]
+                .iter()
+                .all(|p| !p.is_empty() && std::path::Path::new(p).is_file())
+                .then_some(Message::Setup(Event::Save));
+        }
+        if !report.error.is_empty() {
+            // Repairing/deleting an invalid file later is not authorization for
+            // watcher-driven startup or replacement of existing preferences.
+            self.setup_requested = true;
+            self.router_start_requested = true;
+            return None;
+        }
+        // Once per window lifetime, not on refresh, watcher events or backend
+        // reconnect. No automatic retry after an uncertain/failed mutation.
+        self.router_start_requested = true;
+        Some(Message::ServerUp)
+    }
+
     pub(super) fn setup_view(&self) -> Element<'_, Message> {
         let mut column = widget::column::with_capacity(12)
             .spacing(12)
-            .push(widget::text::body(tr("runtime-versions")));
+            .push(widget::text::body(tr("runtime-install-help")));
         if let Some(error) = &self.setup.error {
             column = column.push(super::view::notice(tr("setup-error"), error));
         }

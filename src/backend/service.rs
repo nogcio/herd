@@ -88,11 +88,19 @@ impl Shared {
         store.preferences = Some(settings.clone());
         Controller::new(settings)
     }
-    fn accept(&self, kind: &str, model: &str) -> Result<Operation> {
+    fn accept(&self, kind: &str, model: &str) -> Result<(Operation, bool)> {
         if !model.is_empty() {
             config::validate_id(model)?;
         }
         let mut s = self.store();
+        if kind == "server-up"
+            && let Some(job) = s
+                .jobs
+                .iter()
+                .find(|o| o.kind == kind && o.status == "running")
+        {
+            return Ok((job.clone(), false));
+        }
         ensure!(
             !s.jobs.iter().any(|o| o.status == "running"),
             "Another management operation is in progress"
@@ -109,7 +117,7 @@ impl Shared {
             s.jobs.pop_front();
         }
         s.jobs.push_back(job.clone());
-        Ok(job)
+        Ok((job, true))
     }
     fn complete(&self, id: &str, result: Result<()>) -> Operation {
         let mut s = self.store();
@@ -249,7 +257,10 @@ impl Service {
         work: Work,
         emitter: &SignalEmitter<'_>,
     ) -> fdo::Result<String> {
-        let operation = self.shared.accept(kind, model).map_err(failure)?;
+        let (operation, accepted) = self.shared.accept(kind, model).map_err(failure)?;
+        if !accepted {
+            return Ok(operation.id);
+        }
         let id = operation.id.clone();
         let result_id = id.clone();
         let shared = self.shared.clone();
@@ -732,23 +743,39 @@ mod tests {
         }
         let boundary = format!("{}/{}:Q4_K_M", "n".repeat(96), "r".repeat(56));
         assert_eq!(boundary.len(), 160);
-        let accepted = shared.accept("download", &boundary).unwrap();
+        let (accepted, _) = shared.accept("download", &boundary).unwrap();
         assert_eq!(accepted.model, boundary);
     }
     #[test]
     fn admission_is_shared_bounded_and_does_not_replay_completed_or_unknown_operations() {
         let shared = Shared::new();
-        let first = shared.accept("start", "example").unwrap();
+        let (first, _) = shared.accept("start", "example").unwrap();
         assert!(shared.accept("stop", "competitor").is_err());
         assert_eq!(shared.store().jobs[0], first);
         shared.complete(&first.id, Err(anyhow!("Refused: competitor unchanged")));
         for _ in 0..70 {
-            let op = shared.accept("verify", "example").unwrap();
+            let (op, _) = shared.accept("verify", "example").unwrap();
             shared.complete(&op.id, Ok(()));
         }
         assert_eq!(shared.store().jobs.len(), 64);
         assert!(shared.store().jobs.iter().all(|o| o.status == "succeeded"));
         assert!(Shared::new().store().jobs.is_empty());
         assert!(confirmation(false).is_err());
+    }
+
+    #[test]
+    fn concurrent_router_requests_share_only_the_running_startup() {
+        let shared = Shared::new();
+        let (first, accepted) = shared.accept("server-up", "").unwrap();
+        assert!(accepted);
+        let (second, accepted) = shared.accept("server-up", "").unwrap();
+        assert!(!accepted);
+        assert_eq!(first, second);
+        assert_eq!(shared.store().jobs.len(), 1);
+        assert!(shared.accept("stop", "competitor").is_err());
+        shared.complete(&first.id, Err(anyhow!("Startup failed")));
+        let (retry, accepted) = shared.accept("server-up", "").unwrap();
+        assert!(accepted);
+        assert_ne!(first.id, retry.id);
     }
 }

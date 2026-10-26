@@ -36,12 +36,14 @@ features, including the actual GUI dependency edges. An audit that unexpectedly
 omits these Git sources is incomplete, even if its license stage reports
 success.
 
-The external runtime is llama.cpp b11856, commit `3642238cc`, under MIT. Hosting
-uses
+The reference external runtime is llama.cpp b11856, commit `3642238cc`, under
+MIT. The hosting contract was reviewed against
 [Process Compose v1.122.0](https://github.com/F1bonacc1/process-compose/tree/v1.122.0)
 under Apache-2.0. Its reviewed Linux amd64 release archive has SHA-256
 `9b6dbc38324c0b0481f1cd1dd828ffdc78117129ec797678f4bf8c4023311281`. These are
-separate executables, not bundled inference libraries. Preserve their
+separate executables, not bundled inference libraries. Runtime version strings
+are not admission requirements; compatibility with arbitrary installed builds
+is not certified. Preserve their
 licenses/notices when packaging them; the Cargo audit does not audit external
 binaries. Downloads of these tools require explicit installation, not an
 implicit global package operation.

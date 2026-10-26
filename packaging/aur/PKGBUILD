@@ -1,7 +1,7 @@
 # Maintainer: nogcio (https://github.com/nogcio)
 pkgname=herd-git
 pkgver=0.1.0.r0
-pkgrel=2
+pkgrel=3
 pkgdesc='Local llama.cpp model manager with a native COSMIC window, applet and CLI'
 arch=('x86_64')
 url='https://github.com/nogcio/herd'
@@ -9,11 +9,14 @@ url='https://github.com/nogcio/herd'
 # Herd-authored source remains MIT; see the installed license bundle.
 license=('GPL-3.0-only')
 depends=('glibc' 'gcc-libs' 'bash' 'coreutils' 'dbus' 'systemd'
-         'fontconfig' 'freetype2' 'libxkbcommon' 'wayland' 'hicolor-icon-theme')
+         'fontconfig' 'freetype2' 'libxkbcommon' 'wayland' 'hicolor-icon-theme'
+         'process-compose')
 makedepends=('cargo' 'git' 'pkgconf' 'jq' 'cargo-bundle-licenses')
 checkdepends=('desktop-file-utils' 'appstream')
 optdepends=('cosmic-panel: native panel companion'
-            'process-compose: router hosting (supported version: 1.122.0)'
+            'llama.cpp-git: separately installed CPU runtime (AUR; API compatibility required)'
+            'llama.cpp-cuda-git: alternative NVIDIA CUDA runtime (AUR; API compatibility required)'
+            'llama.cpp-vulkan-git: alternative Vulkan runtime (AUR; API compatibility required)'
              'vulkan-icd-loader: GPU rendering with an installed Vulkan driver')
 provides=('herd')
 conflicts=('herd')

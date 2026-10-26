@@ -313,14 +313,9 @@ async fn verify_with_environment(
     )
     .await
     .map_err(|_| anyhow!("Runtime version check timed out"))??;
-    let output = format!(
-        "{}{}",
-        String::from_utf8_lossy(&version.stdout),
-        String::from_utf8_lossy(&version.stderr)
-    );
     ensure!(
-        version.status.success() && output.contains("build 11856, commit 3642238cc"),
-        "Unsupported llama.cpp build; expected b11856 (3642238cc)"
+        version.status.success(),
+        "llama-server executable check failed; inspect the selected binary and library directories"
     );
     let mut command = tokio::process::Command::new(&settings.process_compose);
     environment.apply(&mut command);
@@ -335,17 +330,9 @@ async fn verify_with_environment(
     )
     .await
     .map_err(|_| anyhow!("Process Compose version check timed out"))??;
-    let output = format!(
-        "{}{}",
-        String::from_utf8_lossy(&version.stdout),
-        String::from_utf8_lossy(&version.stderr)
-    );
     ensure!(
-        version.status.success()
-            && output
-                .split_whitespace()
-                .any(|v| v.trim_start_matches('v') == "1.122.0"),
-        "Unsupported Process Compose; expected v1.122.0"
+        version.status.success(),
+        "Process Compose executable check failed"
     );
     reject_automatic_configs(configs)
 }
@@ -602,6 +589,52 @@ printf 'Process Compose v1.122.0\n'
                 .is_err()
             );
             assert!(!dir.path().join("probes").exists());
+            assert_untouched(dir.path());
+        }
+    }
+
+    #[tokio::test]
+    async fn installed_runtime_versions_are_not_pinned_but_probe_failures_block_setup() {
+        for (version, success) in [
+            ("build 11999, commit abcdef123", true),
+            ("custom build", true),
+            ("broken installation", false),
+        ] {
+            let (dir, settings, environment, configs) = fixture();
+            executable(
+                &settings.server,
+                &format!(
+                    "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\nprintf '%s\\n' '{version}'\nexit {}\n",
+                    if success { 0 } else { 1 }
+                ),
+            );
+            let result = verify_with_environment(
+                &settings,
+                &environment,
+                &configs,
+                &dir.path().join("native cache"),
+            )
+            .await;
+            assert_eq!(result.is_ok(), success);
+            assert_untouched(dir.path());
+        }
+        for success in [true, false] {
+            let (dir, settings, environment, configs) = fixture();
+            executable(
+                &settings.process_compose,
+                &format!(
+                    "#!/bin/sh\n[ \"$1\" = version ] || exit 99\nprintf 'Process Compose v9.9.9\\n'\nexit {}\n",
+                    if success { 0 } else { 1 }
+                ),
+            );
+            let result = verify_with_environment(
+                &settings,
+                &environment,
+                &configs,
+                &dir.path().join("native cache"),
+            )
+            .await;
+            assert_eq!(result.is_ok(), success);
             assert_untouched(dir.path());
         }
     }

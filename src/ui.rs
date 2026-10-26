@@ -63,6 +63,8 @@ pub struct Applet {
     error: Option<String>,
     discovery_error: Option<String>,
     setup_required: bool,
+    setup_requested: bool,
+    router_start_requested: bool,
     pending_close: bool,
     pending_stop: Option<String>,
     pending_removal: Option<herd::backend::protocol::RemovalPlan>,
@@ -591,6 +593,7 @@ impl cosmic::Application for Applet {
                 let mut artwork = Task::none();
                 match snapshots {
                     Ok(report) => {
+                        let startup = self.startup_action(&report);
                         self.setup_required = report.setup_required;
                         self.snapshots = report.models.into_iter().map(Into::into).collect();
                         self.discovery_error = (!report.error.is_empty()).then_some(report.error);
@@ -600,6 +603,12 @@ impl cosmic::Application for Applet {
                             .find(|o| o.status == "running")
                             .map(|o| format!("{} {}", localization::operation(&o.kind), o.model));
                         artwork = self.icons.schedule(&self.snapshots);
+                        if let Some(startup) = startup {
+                            artwork = Task::batch([
+                                artwork,
+                                cosmic::task::message(cosmic::Action::App(startup)),
+                            ]);
+                        }
                         if self
                             .pending_stop
                             .as_ref()

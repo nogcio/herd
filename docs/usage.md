@@ -2,21 +2,24 @@
 
 ## Configure an existing runtime
 
-Open the installed application and use first-run setup to select already
-installed runtime executables. Setup checks their versions and creates missing
-private preferences and native presets only. Alternatively create private
-`~/.config/herd/server.json` and `models.ini` using
+Install llama.cpp separately, then open Herd. With `llama-server` and
+`process-compose` on `PATH`, the management window checks executables, creates
+missing private preferences and starts the empty router automatically. Existing
+preferences and valid native presets are retained. Runtime setup remains
+available for nonstandard executable paths or failed checks. Alternatively
+create private `~/.config/herd/server.json` and `models.ini` using
 [the templates](../templates/server.json) and
 [native configuration](presets.md). Use existing GGUF paths; registration
-neither moves nor redownloads weights. `HERD_CONFIG` can select
-another absolute hosting-preferences path for an isolated backend process. The
-variable must be set on the service, not just a client shell. No global AI or
-desktop configuration is modified.
+neither moves nor redownloads weights. `HERD_CONFIG` can select another absolute
+hosting-preferences path for an isolated backend process. The variable must be
+set on the service, not just a client shell. No global AI or desktop
+configuration is modified.
 
-Supported external executables: llama.cpp b11856 / `3642238cc` and Process
-Compose v1.122.0. CUDA builds may need explicit shared-library directories in
-`server.json`. The backend checks both executable versions before starting its
-host. All clients require its session D-Bus activation registration.
+The reference contract was reviewed against llama.cpp b11856 / `3642238cc` and
+Process Compose v1.122.0, but versions are not pinned or compared during
+admission. Executable probes must succeed; incompatible command flags or API
+responses still fail. CUDA builds may need explicit shared-library directories
+in `server.json`. All clients require session D-Bus activation registration.
 
 Automatic llama.cpp configuration is unsupported: both
 `/etc/llama.cpp/config.ini` and the selected host's
@@ -47,7 +50,8 @@ issued `server-up` does not own its lifetime; Process Compose daemonizes it.
 Logs and private IPC live under the configured state directory. Inference runs
 offline; missing files fail rather than trigger an implicit download. Explicit
 acquisition uses separate native download workers. There are no
-application-managed cgroup memory caps or automatic runtime installation.
+application-managed cgroup memory caps or GUI runtime downloads. Process Compose
+is installed as a package dependency; llama.cpp is installed separately.
 
 ## Management window
 
@@ -55,11 +59,15 @@ application-managed cgroup memory caps or automatic runtime installation.
 cargo run --locked --features applet --bin herd-cosmic
 ```
 
-The window shows native profiles and runtime state. If configured but offline,
-choose **Start router**. Starting the
-router is not loading a model. Choose **Load** on a model to load its local
-weights. Confirm **Unload** before switching to a competing model; active
-requests may be interrupted. There is no automatic idle detection or eviction.
+The window shows native profiles and runtime state and requests empty-router
+startup once. It retains a responsive configured host without restarting it,
+even with a running model. If startup fails, inspect the error and choose
+**Start router** to retry. Timers, file changes and backend reconnection do not
+retry startup. Invalid existing configuration requires an explicit startup retry
+after repair. Starting the router is not loading a model. Choose **Load** on a
+model to load its local weights. Confirm **Unload** before switching to a
+competing model; active requests may be interrupted. There is no automatic idle
+detection or eviction.
 
 Select a preset row or **Settings** in its overflow menu to open the native
 right-hand context drawer for that model. Selection does not load it. Its

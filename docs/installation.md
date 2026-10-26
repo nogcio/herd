@@ -61,14 +61,28 @@ refresh hooks may still run as part of the normal package transaction.
 
 Preferences in `XDG_CONFIG_HOME/herd`, native presets, existing model weights,
 cache and private runtime state are not package assets. Upgrades/removal do not
-rewrite or delete them. First-run setup creates only missing configuration;
-it does not install llama.cpp or Process Compose. Select the supported
-llama.cpp b11856 / `3642238cc` and Process Compose v1.122.0 executables there.
+rewrite or delete them. Install a llama.cpp package separately before opening
+Herd; CPU, CUDA and Vulkan variants are alternatives, not simultaneous
+requirements. The package metadata names runtime choices. Process Compose is a
+normal Herd dependency from Arch extra. Neither runtime has an exact-version
+package constraint or a version-string admission gate. The reviewed reference
+builds are llama.cpp b11856 / `3642238cc` and Process Compose v1.122.0;
+acceptance of another version does not establish compatible flags or API
+behavior.
+
+On first opening the management window, Herd finds `llama-server` and
+`process-compose` on `PATH`, checks executable probes and initializes missing
+configuration. It reuses existing valid presets and never overwrites hosting
+preferences. If discovery or checks fail, select the executables in runtime
+setup. Nonstandard CUDA builds may need explicit library directories.
 An arbitrary newer runtime is not automatically a supported contract.
 
 Open **Herd** from the application menu. Add its optional applet through
 `cosmic-settings panel`. Clients activate the backend on demand; opening a
-client never starts inference.
+client never loads a model. The management window requests empty-router startup
+once per launch; the panel and CLI do not. Startup errors remain visible and
+require an explicit retry. No model is loaded and no weights are downloaded by
+first-run setup or window startup.
 
 ## Updates and previous user-local installations
 
