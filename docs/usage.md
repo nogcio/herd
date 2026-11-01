@@ -194,7 +194,22 @@ state. `server-up` waits for management readiness without loading weights.
 Failures/timeouts do not automatically stop a model; inspect status before
 retry.
 
-Read-only model diagnostics are also available:
+### Runtime inventory and diagnostics
+
+`herd --json runtimes` inspects the connected native sources, instance
+ownership, current action capabilities and independent transfer state.
+Observation executes no launcher or generation request. The backend uses its own
+`COLI_SETUP_HOME`, XDG data directory and `PATH`; changing only a CLI process's
+environment does not reconfigure an already running service. Invalid sources and
+active/unknown competitors block new starts, but do not stop existing inference.
+
+In the window, choose an engine, then use Models, Find models, Downloads and
+Settings. Colibri downloads use its native multi-file API and immutable commits,
+not the GGUF downloader. Load can select and launch verified weights in one
+explicit operation; saves/downloads remain passive. See
+[Colibri workflow, fine settings and limits](colibri.md).
+
+The existing model diagnostic command remains llama.cpp-specific:
 
 ```sh
 cargo run --locked --bin herd-status

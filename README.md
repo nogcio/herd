@@ -1,7 +1,7 @@
 # Herd
 
-**Manage local llama.cpp models from a native COSMIC app, a compact panel
-applet, or the command line.**
+**Manage local llama.cpp and Colibri models from a native COSMIC app, a compact
+panel applet, or the command line.**
 
 Herd gives you one place to see your models, choose what to load, find new
 GGUFs, and edit runtime settings—without juggling launcher scripts or copying
@@ -9,8 +9,8 @@ weights you already have. Keep the management window open for your library and
 settings, or use the panel for a quick status check and explicit load/unload
 actions.
 
-Herd manages model lifecycles and settings; llama.cpp performs inference. Herd
-does not provide a chat interface or implement an inference engine. It is a
+Herd manages model lifecycles and settings; installed engines perform inference.
+Herd does not provide a chat interface or implement an inference engine. It is a
 standalone libcosmic application, not a COSMIC Settings plugin.
 
 ## Project status
@@ -42,6 +42,11 @@ lifetime, or successful live model transfers. Those require separate, authorized
   cache entry.
 - **Use the same controls from scripts:** the non-interactive CLI returns JSON
   and shares the application's observations and operation policy.
+- **Choose your engine:** select llama.cpp or Colibri in the same window, then
+  find models, review a download and explicitly load. Colibri reuses its native
+  multi-file downloader and exposes native context, CPU/GPU, memory/cache,
+  routing/sampling and queue controls in Settings. Downloads and saves never
+  start or restart a model. See [Colibri support and limits](docs/colibri.md).
 
 The GUI includes English and Russian localization, optional model artwork, and
 the Gather application icon. Herd does not monitor GPU utilization or memory;
@@ -53,6 +58,12 @@ Opening the management window starts the configured empty router, never a model
 or download. Checking status, selecting a model, and saving settings remain
 passive. Normal loads run offline: missing weights
 fail rather than trigger a download. Download completion never loads a model.
+
+Router startup automatically clears an abandoned control socket left by a crash
+or reboot after verifying that no host accepts connections and the router port
+is free. Live or uncertain hosts are never stopped or replaced automatically.
+Invalid settings and missing dependencies require correction; Herd does not
+reset user configuration or repeatedly restart a failing runtime.
 
 Hosting requires automatic llama.cpp configuration to be absent at the system
 and exact host-user locations. Existing hosts without recorded host identity
@@ -67,7 +78,7 @@ switching; unloading can interrupt active requests. Settings edits do not
 restart running inference. Closing a window, popup or CLI does not stop an
 accepted operation, model or transfer.
 
-Acquisition currently supports unambiguous
+llama.cpp acquisition currently supports unambiguous
 **single-file GGUFs with advertised SHA-256 metadata**, not split models,
 sidecars, remote presets or private/gated repositories. The supported native API
 downloads current `main`, not a pinned revision; advertised-size admission is
@@ -79,12 +90,15 @@ readiness.
 
 ## Build, install and open
 
-Herd requires a session D-Bus and systemd user manager. Install llama.cpp
-separately with `llama-server` on `PATH`; choose its CPU, CUDA or Vulkan variant
-for your hardware. The Herd package depends on Process Compose. Neither
-executable is version-pinned. The reference contract was reviewed against
-llama.cpp b11856 / `3642238cc` and Process Compose v1.122.0; other versions are
-accepted, not automatically certified compatible. Herd installs no GPU drivers.
+Herd requires a session D-Bus and systemd user manager. Install the engines
+separately. For llama.cpp, put `llama-server` on `PATH` and choose its CPU, CUDA
+or Vulkan variant. Colibri requires its installed launcher, Python 3, native
+catalogue/downloader modules and the desired family engine; Herd does not build
+them. The Herd package depends on Process Compose. Neither llama.cpp nor Process
+Compose executable is version-pinned. The reference contract was reviewed
+against llama.cpp b11856 / `3642238cc` and Process Compose v1.122.0; other
+versions are accepted, not automatically certified compatible. Herd installs no
+GPU drivers.
 
 To build the current source without installing or launching Herd, first review
 the [development prerequisites](CONTRIBUTING.md#prerequisites), then run:
@@ -107,11 +121,13 @@ makepkg --cleanbuild
 After reviewing and installing the package through your package manager:
 
 1. Open **Herd** from the application menu, or run `herd-cosmic`.
-2. Herd detects installed executables, initializes missing configuration and
-   starts the empty router. For a nonstandard installation, select the
-   executables in runtime setup. Existing files are not overwritten.
-3. Import a local GGUF or review a download, then explicitly **Load** a model
-   when ready. Failed router startup offers **Start router** for a manual retry.
+2. Select the installed engine. For llama.cpp, Herd initializes missing settings
+   and starts an empty router; existing files are not overwritten. Colibri reads
+   its native setup or catalogue and never starts a model on opening the window.
+3. Find a model, review **Download**, then explicitly **Load** when ready. Local
+   GGUF import remains available for llama.cpp. Colibri can select downloaded
+   weights and load in one action, without a terminal or extra setup step.
+4. Open **Settings** for native fine tuning. Saves do not restart inference.
 
 For the optional panel companion, run `cosmic-settings panel` and add **Herd**.
 Directly running `herd-cosmic-applet` does not place it in the panel.
@@ -120,8 +136,9 @@ not enable login autostart or change your panel layout. Pacman owns application
 installation and updates; preferences, presets and weights remain user data.
 After an update, reopen the window or re-add the applet. Herd coordinates an
 outdated backend's replacement after accepted operations finish, without
-restarting the router or models. The first upgrade from a backend without this
-protocol needs a one-time management-service restart; see
+restarting the router or models. An upgrade from a backend with an incompatible
+D-Bus interface or without this protocol needs a one-time management-service
+restart; see
 [updates](docs/installation.md#updates-and-previous-user-local-installations).
 
 See the [user guide](docs/usage.md) for setup, settings and CLI details, or
@@ -134,6 +151,7 @@ With the backend activation registrations installed:
 ```sh
 herd --json status
 herd --json config
+herd --json runtimes
 ```
 
 To explicitly start the empty router, load a configured model, then unload it:
@@ -157,6 +175,9 @@ model configuration source; Herd does not keep a second model registry. Process
 Compose hosts the loopback llama.cpp router in an independent user scope, not
 inside the backend service's cgroup. See the
 [architecture contract](docs/architecture.md) for ownership and safety limits.
+Concrete engine modules keep native contracts separate; see ownership,
+cross-engine admission, native editing and acquisition in
+[engine integrations](docs/decisions/0008-engine-integrations.md).
 
 ## Documentation and contributing
 

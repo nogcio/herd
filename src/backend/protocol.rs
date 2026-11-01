@@ -1,6 +1,6 @@
 //! Native D-Bus structures; no JSON envelope or inference traffic on this API.
 use crate::{
-    config::Settings,
+    engines::llama_cpp::{config::Settings, downloads},
     icons::IconSpec,
     model::{Model, Snapshot, State},
 };
@@ -98,11 +98,13 @@ impl From<ModelRecord> for Snapshot {
 /// Common observations; invalid configuration retains explicitly stale models.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Report {
+    /// Independent engine-qualified observations; errors do not hide another runtime.
+    pub runtimes: Vec<crate::runtime::RuntimeRecord>,
     /// Monotonic revision within this backend instance.
     pub revision: u64,
     /// Last successfully observed models.
     pub models: Vec<ModelRecord>,
-    /// Current observation/configuration failure, empty on success.
+    /// llama.cpp library failure; independent engine errors remain on runtime records.
     pub error: String,
     /// Initial hosting preferences are absent, with no previously pinned host.
     pub setup_required: bool,
@@ -113,6 +115,8 @@ pub struct Report {
 /// Service-owned mutation, retained independently of connected clients.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Operation {
+    /// Runtime-qualified lifecycle target, empty for llama.cpp-specific settings/acquisition.
+    pub runtime: String,
     /// Instance-qualified identity; retained across a coordinated backend update.
     /// An ordinary restart or eviction from bounded history invalidates it.
     pub id: String,
@@ -220,10 +224,10 @@ pub struct Catalogue {
     /// Declared model card license, if any.
     pub license: String,
     /// Admitted single-file choices.
-    pub plans: Vec<crate::downloads::Plan>,
+    pub plans: Vec<downloads::Plan>,
 }
-impl From<crate::downloads::Catalogue> for Catalogue {
-    fn from(c: crate::downloads::Catalogue) -> Self {
+impl From<downloads::Catalogue> for Catalogue {
+    fn from(c: downloads::Catalogue) -> Self {
         Self {
             repo: c.repo,
             revision: c.revision,
@@ -232,7 +236,7 @@ impl From<crate::downloads::Catalogue> for Catalogue {
         }
     }
 }
-impl From<Catalogue> for crate::downloads::Catalogue {
+impl From<Catalogue> for downloads::Catalogue {
     fn from(c: Catalogue) -> Self {
         Self {
             repo: c.repo,

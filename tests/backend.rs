@@ -1,10 +1,10 @@
 //! Real, private session bus and bounded service subprocesses; no live services.
 use herd::{
     backend::{
-        NAME, PATH,
+        API_VERSION, NAME, PATH,
         protocol::{Operation, Preferences, Report},
     },
-    config::Settings,
+    engines::llama_cpp::{config::Settings, downloads},
 };
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{
@@ -12,7 +12,19 @@ use tokio::{
     process::{Child, Command},
 };
 
-const INTERFACE: &str = "io.github.nogcio.Herd.Backend1";
+const INTERFACE: &str = "io.github.nogcio.Herd.Backend2";
+async fn native_target(proxy: &zbus::Proxy<'_>, model: &str) -> herd::runtime::Target {
+    let records: Vec<herd::runtime::RuntimeRecord> = proxy.call("Runtimes", &()).await.unwrap();
+    let native = records
+        .into_iter()
+        .find(|r| r.engine == "llama_cpp")
+        .unwrap();
+    herd::runtime::Target {
+        runtime: native.id,
+        model: model.into(),
+        revision: native.revision,
+    }
+}
 fn spawn_service(address: &str, config: &Path) -> Child {
     spawn_service_at(
         Path::new(env!("CARGO_BIN_EXE_herd-service")),
@@ -25,6 +37,7 @@ fn spawn_service_at(executable: &Path, address: &str, config: &Path) -> Child {
     Command::new(executable)
         .env("DBUS_SESSION_BUS_ADDRESS", address)
         .env("HERD_CONFIG", config)
+        .env("COLI_SETUP_HOME", config.with_file_name("colibri"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -57,6 +70,252 @@ async fn private_bus(dir: &Path) -> (Child, String) {
     .unwrap()
     .unwrap();
     (bus, address)
+}
+
+#[tokio::test]
+async fn colibri_catalogue_recovers_user_local_installation_over_dbus_without_native_setup_or_model_actions()
+ {
+    tokio::time::timeout(Duration::from_secs(25), async {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let search = dir.path().join("service-path");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir(&search).unwrap();
+        symlink("/usr/bin/python3", search.join("python3")).unwrap();
+        let config = dir.path().join("server.json");
+        let competitor = dir.path().join("competing-weights");
+        std::fs::write(&competitor, b"unchanged competing weights").unwrap();
+        let (mut bus, address) = private_bus(dir.path()).await;
+        let mut service = Command::new(env!("CARGO_BIN_EXE_herd-service"))
+            .env("DBUS_SESSION_BUS_ADDRESS", &address)
+            .env("HERD_CONFIG", &config)
+            .env("HOME", &home)
+            .env("PATH", &search)
+            .env("COLI_SETUP_HOME", dir.path().join("native-setup"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let connection = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let proxy = zbus::Proxy::new(&connection, NAME, PATH, INTERFACE)
+            .await
+            .unwrap();
+        ready(&proxy).await;
+        let missing: Result<Vec<herd::engines::colibri::acquisition::Choice>, _> =
+            proxy.call("ColibriCatalogue", &()).await;
+        assert!(missing.is_err());
+        let modules = home.join(".local/libexec/colibri");
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in [
+            "setup_catalog.py",
+            "setup_download.py",
+            "family_registry.py",
+        ] {
+            std::fs::write(
+                modules.join(name),
+                include_str!("fixtures/colibri_modules.py"),
+            )
+            .unwrap();
+        }
+        let marker = dir.path().join("must-not-launch");
+        for file in [bin.join("coli"), modules.join("colibri")] {
+            std::fs::write(&file, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let choices: Vec<herd::engines::colibri::acquisition::Choice> =
+            proxy.call("ColibriCatalogue", &()).await.unwrap();
+        assert_eq!(choices.len(), 1);
+        assert!(choices[0].engine_available);
+        let records: Vec<herd::runtime::RuntimeRecord> = proxy.call("Runtimes", &()).await.unwrap();
+        let native = records
+            .iter()
+            .find(|record| record.engine == "colibri")
+            .unwrap();
+        assert!(native.executable_found);
+        assert_eq!(native.configuration, "absent");
+        let report: Report = proxy.call("Snapshot", &()).await.unwrap();
+        assert!(report.operations.is_empty());
+        assert!(!config.exists());
+        assert!(!dir.path().join("native-setup/setup.json").exists());
+        assert!(!marker.exists());
+        assert_eq!(
+            std::fs::read(&competitor).unwrap(),
+            b"unchanged competing weights"
+        );
+        service.kill().await.unwrap();
+        service.wait().await.unwrap();
+        bus.kill().await.unwrap();
+        bus.wait().await.unwrap();
+    })
+    .await
+    .expect("User-local Colibri catalogue recovery timed out");
+}
+
+#[tokio::test]
+async fn runtime_inventory_is_passive_engine_scoped_and_rereads_native_colibri_setup() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        use std::os::unix::fs::PermissionsExt;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let llama = MockServer::start().await;
+        let colibri = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"data":[{"id":"competitor","status":{"value":"loaded"}}]}),
+            ))
+            .mount(&llama)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status":"ok","arch":"glm"})),
+            )
+            .mount(&colibri)
+            .await;
+        let weights = dir.path().join("competitor.gguf");
+        std::fs::write(&weights, b"GGUFexisting competitor").unwrap();
+        let presets = dir.path().join("models.ini");
+        let preset_bytes = format!("version = 1\n[competitor]\nmodel = {}\n", weights.display());
+        std::fs::write(&presets, &preset_bytes).unwrap();
+        let settings = Settings {
+            server: "/missing/llama-server".into(),
+            library_dirs: vec![],
+            process_compose: "/missing/process-compose".into(),
+            presets: presets.clone(),
+            endpoint: llama.uri(),
+            state_dir: dir.path().join("state"),
+            working_dir: dir.path().into(),
+        };
+        let config = dir.path().join("server.json");
+        let config_bytes = serde_json::to_vec(&settings).unwrap();
+        std::fs::write(&config, &config_bytes).unwrap();
+        let native_home = dir.path().join("colibri");
+        std::fs::create_dir(&native_home).unwrap();
+        let native = native_home.join("setup.json");
+        let launcher = native_home.join("coli");
+        let marker = native_home.join("must-not-run");
+        std::fs::write(
+            &launcher,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let native_bytes = serde_json::to_vec(&serde_json::json!({
+            "version":1,"host":"127.0.0.1","port":colibri.address().port(),
+            "model_dir":dir.path(),"family":"glm","launcher":launcher,
+            "env":{"COLI_API_KEY":"private-test-value"},"args":["web","--model",dir.path(),"--host","127.0.0.1","--port",colibri.address().port().to_string()]
+        }))
+        .unwrap();
+        std::fs::write(&native, &native_bytes).unwrap();
+        let (mut bus, address) = private_bus(dir.path()).await;
+        let mut service = spawn_service(&address, &config);
+        let connection = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let proxy = zbus::Proxy::new(&connection, NAME, PATH, INTERFACE)
+            .await
+            .unwrap();
+        ready(&proxy).await;
+        let before = report_matching(&proxy, |report| {
+            report
+                .models
+                .iter()
+                .any(|m| m.id == "competitor" && m.state == "ready")
+        })
+        .await;
+        let output = Command::new(env!("CARGO_BIN_EXE_herd"))
+            .args(["--json", "runtimes"])
+            .env("DBUS_SESSION_BUS_ADDRESS", &address)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+            .wait_with_output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["ok"], true);
+        let runtimes: Vec<herd::runtime::RuntimeRecord> =
+            serde_json::from_value(json["data"].clone()).unwrap();
+        assert_eq!(runtimes.len(), 2);
+        assert_eq!(runtimes[0].engine, "llama_cpp");
+        assert_eq!(runtimes[1].engine, "colibri");
+        assert_ne!(runtimes[0].id, runtimes[1].id);
+        assert!(runtimes[1].executable_found);
+        assert!(!runtimes[1].managed);
+        assert!(
+            runtimes
+                .iter()
+                .all(|r| r.configuration == "valid" && r.observation == "reachable")
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-test-value"));
+        // Atomic replacement, deletion and recreation are seen by each fresh request.
+        let replacement = native_home.join("replacement.json");
+        std::fs::write(&replacement, b"private invalid setup").unwrap();
+        std::fs::rename(&replacement, &native).unwrap();
+        let invalid: Vec<herd::runtime::RuntimeRecord> = proxy.call("Runtimes", &()).await.unwrap();
+        assert_eq!(invalid[1].id, runtimes[1].id);
+        assert_eq!(invalid[1].configuration, "invalid");
+        assert_eq!(invalid[1].observation, "not_observed");
+        assert_eq!(invalid[0].observation, "reachable");
+        assert!(!invalid[1].error.contains("private invalid setup"));
+        std::fs::remove_file(&native).unwrap();
+        let absent: Vec<herd::runtime::RuntimeRecord> = proxy.call("Runtimes", &()).await.unwrap();
+        assert_eq!(absent[1].configuration, "absent");
+        std::fs::write(&native, &native_bytes).unwrap();
+        let restored: Vec<herd::runtime::RuntimeRecord> =
+            proxy.call("Runtimes", &()).await.unwrap();
+        assert_eq!(restored, runtimes);
+        let after: Report = proxy.call("Snapshot", &()).await.unwrap();
+        assert_eq!(after.models, before.models);
+        assert!(after.operations.is_empty());
+        assert_eq!(std::fs::read(&config).unwrap(), config_bytes);
+        assert_eq!(std::fs::read(&presets).unwrap(), preset_bytes.as_bytes());
+        assert_eq!(std::fs::read(&weights).unwrap(), b"GGUFexisting competitor");
+        assert_eq!(std::fs::read(&native).unwrap(), native_bytes);
+        assert!(!marker.exists());
+        assert!(
+            llama
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method == "GET" && r.url.query().is_none())
+        );
+        assert!(
+            colibri
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method == "GET" && r.url.path() == "/health")
+        );
+        service.kill().await.unwrap();
+        service.wait().await.unwrap();
+        bus.kill().await.unwrap();
+        bus.wait().await.unwrap();
+    })
+    .await
+    .expect("Read-only runtime inventory timed out");
 }
 
 #[tokio::test]
@@ -161,7 +420,9 @@ async fn coordinated_update_drains_work_retains_results_and_preserves_the_runnin
                 .unwrap(),
             "draining"
         );
-        let rejected: zbus::Result<String> = proxy.call("Stop", &("competitor", true)).await;
+        let rejected: zbus::Result<String> = proxy
+            .call("Stop", &(native_target(&proxy, "competitor").await, true))
+            .await;
         assert!(rejected.is_err());
         loop {
             if proxy
@@ -405,7 +666,7 @@ async fn clients_share_operations_disconnect_does_not_cancel_and_restart_never_r
     // Reject unsupported acquisition identities before accepting a job or
     // accessing public metadata, using the same native ID bounds as starts.
     for model in [String::new(), "x".repeat(161), "namespace/repo:Q4 K".into()] {
-        let plan = herd::downloads::Plan {
+        let plan = downloads::Plan {
             model,
             repo: "namespace/repo".into(),
             revision: "a".repeat(40),
@@ -430,7 +691,12 @@ async fn clients_share_operations_disconnect_does_not_cancel_and_restart_never_r
             .unwrap()
             .success()
     );
-    let rejection: zbus::Result<String> = observer.call("Stop", &("competitor", false)).await;
+    let rejection: zbus::Result<String> = observer
+        .call(
+            "Stop",
+            &(native_target(&observer, "competitor").await, false),
+        )
+        .await;
     let removal = herd::backend::protocol::RemovalPlan {
         model: "competitor".into(),
         revision: "a".repeat(64),
@@ -654,7 +920,10 @@ async fn clients_share_operations_disconnect_does_not_cancel_and_restart_never_r
             .iter()
             .any(|m| m.id == "competitor" && m.state == "ready")
     );
-    let refused: String = observer.call("Start", &("imported",)).await.unwrap();
+    let refused: String = observer
+        .call("Start", &(native_target(&observer, "imported").await,))
+        .await
+        .unwrap();
     assert_eq!(wait_operation(&observer, &refused).await.status, "failed");
     std::fs::write(&replacement, &saved).unwrap();
     std::fs::rename(&replacement, &presets).unwrap();
@@ -682,11 +951,17 @@ async fn clients_share_operations_disconnect_does_not_cancel_and_restart_never_r
             .iter()
             .any(|m| m.id == "competitor" && m.state == "ready")
     );
-    let refused: String = observer.call("Start", &("imported",)).await.unwrap();
+    let refused: String = observer
+        .call("Start", &(native_target(&observer, "imported").await,))
+        .await
+        .unwrap();
     assert_eq!(wait_operation(&observer, &refused).await.status, "failed");
     std::fs::write(&config, &saved_preferences).unwrap();
     report_matching(&observer, |r| r.error.is_empty()).await;
-    let competing: String = observer.call("Start", &("imported",)).await.unwrap();
+    let competing: String = observer
+        .call("Start", &(native_target(&observer, "imported").await,))
+        .await
+        .unwrap();
     assert_eq!(wait_operation(&observer, &competing).await.status, "failed");
     assert!(
         runtime
@@ -737,7 +1012,7 @@ struct ReplacementBackend {
     plan_reviewed: std::sync::atomic::AtomicBool,
 }
 
-#[zbus::interface(name = "io.github.nogcio.Herd.Backend1")]
+#[zbus::interface(name = "io.github.nogcio.Herd.Backend2")]
 impl ReplacementBackend {
     async fn version(&self) -> u32 {
         // Gate the version check following plan review, before Download.
@@ -752,11 +1027,11 @@ impl ReplacementBackend {
         }
         self.version
     }
-    fn plan(&self, model: &str) -> herd::downloads::Plan {
+    fn plan(&self, model: &str) -> downloads::Plan {
         assert_eq!(model, "example/tiny:Q8_0");
         self.plan_reviewed
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        herd::downloads::Plan {
+        downloads::Plan {
             model: model.into(),
             repo: "example/tiny".into(),
             revision: "a".repeat(40),
@@ -766,7 +1041,7 @@ impl ReplacementBackend {
             sha256: "b".repeat(64),
         }
     }
-    fn download(&self, _plan: herd::downloads::Plan, _max: u64, confirmed: bool) -> String {
+    fn download(&self, _plan: downloads::Plan, _max: u64, confirmed: bool) -> String {
         assert!(confirmed);
         self.calls.lock().unwrap().push("download");
         "original-download".into()
@@ -845,7 +1120,7 @@ async fn existing_client_checks_replacement_version_before_mutating_without_repl
             ],
             ..Default::default()
         };
-        for (version, gate_version) in [(2, false), (1, false), (2, true), (1, true)] {
+        for (version, gate_version) in [(API_VERSION + 1, false), (API_VERSION, false), (API_VERSION + 1, true), (API_VERSION, true)] {
             let original_calls = Arc::new(Mutex::new(Vec::new()));
             let replacement_calls = Arc::new(Mutex::new(Vec::new()));
             let gate = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
@@ -854,7 +1129,7 @@ async fn existing_client_checks_replacement_version_before_mutating_without_repl
                 .name(NAME)
                 .unwrap()
                 .serve_at(PATH, ReplacementBackend {
-                    version: 1,
+                    version: API_VERSION,
                     calls: original_calls.clone(),
                     report: report.clone(),
                     snapshot_gate: Some(gate.clone()),
@@ -902,7 +1177,7 @@ async fn existing_client_checks_replacement_version_before_mutating_without_repl
             let output = child.wait_with_output().await.unwrap();
             let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(*original_calls.lock().unwrap(), ["download"]);
-            if version == 2 {
+            if version != API_VERSION {
                 assert_eq!(output.status.code(), Some(1));
                 assert_eq!(result["ok"], false);
                 assert_eq!(result["error"]["message"], "Unsupported backend API version");

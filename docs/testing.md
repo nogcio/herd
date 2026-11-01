@@ -24,9 +24,21 @@ installed Herd cannot be activated by the test's startup race.
 
 ## Ownership
 
+The `config`, `controller`, `downloads`, `hosting` and native `runtime` owners
+below are modules under `engines::llama_cpp`, unless otherwise qualified.
+
 | Contract | Owning tests |
 | --- | --- |
 | Native defaults, fail-closed validation, conflict-checked edits | `config` |
+| Engine/location-qualified inventory and independent source errors | `engines::inventory` |
+| Read-only Colibri schema, health bounds, redirects and special files | `engines::colibri` |
+| Cross-engine competitors and configuration changes block new starts without eviction | `controller`, `engines::llama_cpp::controller` |
+| Owned UDS identity, foreign/lost host refusal, invalid edited setup and literal scoped launch | `engines::colibri::lifecycle`, bounded subprocess and UDS fixtures |
+| Native multi-file scope, immutable metadata, reused/corrupt files, unchanged native settings | `engines::colibri::acquisition`, bounded Python caller and native API double |
+| File-backed download worker, terminal import failures and results after host exit | `engines::colibri::acquisition`, bounded Python caller and native API double |
+| Complete native resource edits, private backups, credentials/unrelated fields and stale revisions | `engines::colibri::settings` |
+| Colibri dirty close/engine switching, late metadata and explicit acquisition review | `ui::colibri_editor`, `ui::colibri` |
+| Runtime inventory CLI, native atomic replacement/deletion/recreation, unchanged competitor and non-executed launcher | `tests/backend.rs`, private bus and HTTP mocks |
 | Atomic complete edits, inherited reset, unchanged comments/competitors | `config`, private-bus IPC test |
 | Atomic save/delete/recreation notifications | `config`, real temporary directory |
 | Passive observation, fresh load admission, unchanged competitor | `controller`, isolated HTTP mock server |
@@ -57,6 +69,7 @@ installed Herd cannot be activated by the test's startup race.
 | Unpinned executable probes and unchanged weights/competitors | `hosting`, bounded fake executables |
 | One-shot window setup/startup; passive panel and failed-start non-replay | `ui::setup` |
 | Shared concurrent startup and responsive-host preservation | `backend::service`, `controller` |
+| Abandoned router socket recovery; live sockets, symlinks and unrelated files preserved | `hosting`, isolated Unix sockets |
 | Coordinated update drain, failed handoff, restored results and unchanged competitors/transfers | `tests/backend.rs`, private bus and HTTP mocks |
 | Executable identity, private bounded one-shot handoff and terminal-only results | `backend::update` |
 | Update owner replacement, version validation and read-only waiter reconnection | `backend`, private bus |
@@ -66,12 +79,31 @@ contracts; they are not another test suite. Do not duplicate generic upstream
 tests, widen visibility for fixtures, or install test data into real services.
 Bug fixes need relevant failure-path and unchanged-state assertions.
 
+With Process Compose installed, run its isolated worker-transport regression:
+
+```sh
+cargo test --locked --lib process_compose_runs_the_download_worker -- --ignored
+```
+
+This runs the production download entrypoint through a real Process Compose
+process with temporary native API doubles. It contacts no model host, downloads
+no weights and creates no systemd unit. It does not establish real acquisition
+or independent-scope lifetime acceptance.
+
 Test product behavior, not repository file layouts, command declarations or
 the checks themselves. Packaging acceptance uses actual optimized builds and
 an explicit package installation/upgrade, not a second installer implemented
 inside tests.
 
 ## Native acceptance
+
+For Colibri, separately authorize disposable models/downloads before testing
+Load, Stop, Pause or Resume. Check both engine selections, catalogue review and
+the ordinary Find → Download → Load path, existing-file reuse, settings drawer,
+dirty-close/reload, pending edits, transfer recovery after closing the window,
+and unchanged competitors across engines. Check actual scope lifetime over a
+management-backend restart. Python/native API doubles and fake scope launchers
+prove none of these live properties. See [Colibri limits](colibri.md).
 
 Use the [panel-hosted route](usage.md#run-in-the-panel) for
 applet acceptance and `herd-cosmic` for the standalone window.

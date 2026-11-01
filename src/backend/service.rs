@@ -1,12 +1,21 @@
 //! Single user-session owner for management mutations and common observations.
-use super::{NAME, PATH, protocol::*, update};
+use super::{API_VERSION, NAME, PATH, protocol::*, update};
 use crate::{
-    config::{self, Presets, Settings},
-    controller::Controller,
-    downloads::{Hub, Plan},
-    hosting,
+    engines::colibri::acquisition as colibri_acquisition,
+    engines::colibri::settings as colibri_settings,
+    engines::llama_cpp::{
+        config::{self, Presets, Settings},
+        controller::Controller,
+        downloads::{Hub, Plan},
+        hosting,
+        runtime::{DownloadProgress, Runtime},
+    },
+    engines::{
+        colibri::lifecycle as colibri,
+        inventory::{self, Kind},
+    },
     model::{Snapshot, State},
-    runtime::{DownloadProgress, Runtime},
+    runtime::Target,
 };
 use anyhow::{Result, anyhow, ensure};
 use std::{
@@ -110,13 +119,39 @@ impl Shared {
                 allow_previous_host || current.as_ref().is_ok_and(|s| s == previous),
                 "Hosting preferences changed or are unreadable; previous host observations are stale. Restore preferences, or explicitly stop the old host before applying new hosting settings and restarting the backend"
             );
-            return Controller::new(previous.clone());
+            return Ok(Controller::new(previous.clone())?.with_colibri(colibri::Source::capture()));
         }
         let settings = current?;
         store.preferences = Some(settings.clone());
-        Controller::new(settings)
+        Ok(Controller::new(settings)?.with_colibri(colibri::Source::capture()))
     }
-    fn accept(&self, kind: &str, model: &str) -> Result<(Operation, bool)> {
+    fn native_competitor(&self) -> Result<crate::controller::NativeAdmission> {
+        let path = Settings::path()?;
+        let current = Settings::read_path(&path);
+        if let Some(previous) = &self.store().preferences {
+            ensure!(
+                current.as_ref().is_ok_and(|s| s == previous),
+                "llama.cpp configuration changed or is unreadable; its previous host may still be active"
+            );
+            return Ok(crate::controller::NativeAdmission {
+                path,
+                settings: Some(previous.clone()),
+            });
+        }
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(crate::controller::NativeAdmission {
+                    path,
+                    settings: None,
+                })
+            }
+            _ => current.map(|settings| crate::controller::NativeAdmission {
+                path,
+                settings: Some(settings),
+            }),
+        }
+    }
+    fn accept(&self, kind: &str, model: &str, runtime: &str) -> Result<(Operation, bool)> {
         if !model.is_empty() {
             config::validate_id(model)?;
         }
@@ -140,6 +175,7 @@ impl Shared {
         );
         s.sequence += 1;
         let job = Operation {
+            runtime: runtime.into(),
             id: format!("{}-{}", s.instance, s.sequence),
             kind: kind.into(),
             model: model.into(),
@@ -193,9 +229,15 @@ impl Shared {
 }
 
 enum Work {
+    ColibriSettings(colibri_settings::Draft),
+    ColibriDownload(colibri_acquisition::Plan, u64),
+    ColibriPause,
+    ColibriSelect(colibri_acquisition::Plan, String),
+    ColibriLoad(colibri_acquisition::Plan, String),
+    ColibriLoadLocal(String, String, String),
     Preset(String, std::collections::BTreeMap<String, String>, String),
-    Start(String),
-    Stop(String),
+    Start(Target),
+    Stop(Target),
     Up,
     Down,
     Set(String, String, String, String),
@@ -207,8 +249,96 @@ enum Work {
     Remove(RemovalPlan),
 }
 impl Work {
+    fn runtime(&self) -> Result<String> {
+        match self {
+            Self::Start(target) | Self::Stop(target) => Ok(target.runtime.clone()),
+            Self::ColibriDownload(..)
+            | Self::ColibriPause
+            | Self::ColibriSelect(..)
+            | Self::ColibriLoad(..)
+            | Self::ColibriLoadLocal(..)
+            | Self::ColibriSettings(..) => {
+                Ok(inventory::record(Kind::Colibri, &colibri::Source::capture()?.path).id)
+            }
+            _ => Ok(String::new()),
+        }
+    }
+    async fn lifecycle(target: Target, stopping: bool, shared: Arc<Shared>) -> Result<()> {
+        let native_id = inventory::record(Kind::LlamaCpp, &Settings::path()?).id;
+        if target.runtime == native_id {
+            let c = blocking(move || shared.controller(stopping)).await?;
+            return if stopping {
+                c.stop(&target.model).await
+            } else {
+                c.start(&target.model).await
+            };
+        }
+        let source = blocking(colibri::Source::capture).await?;
+        let observation = source.snapshot().await;
+        ensure!(
+            target.runtime == observation.id && target.model == "configured",
+            "Unknown runtime-qualified profile"
+        );
+        if stopping {
+            return colibri::stop(&source).await;
+        }
+        ensure!(
+            target.revision == observation.revision && !observation.pending,
+            "Colibri native setup changed; review the selected configuration before starting"
+        );
+        if observation.managed && observation.state == "ready" {
+            return Ok(());
+        }
+        ensure!(
+            observation.can_start,
+            "Colibri launch is blocked by its native configuration, local artifacts or an existing instance"
+        );
+        let native = blocking(move || shared.native_competitor()).await?;
+        native.admit().await?;
+        colibri::start(&source, &target.revision, &native).await
+    }
     async fn run(self, shared: Arc<Shared>) -> Result<()> {
         match self {
+            Self::ColibriSettings(draft) => {
+                blocking(move || colibri_settings::save(&colibri::Source::capture()?, &draft)).await
+            }
+            Self::Start(target) => Self::lifecycle(target, false, shared).await,
+            Self::Stop(target) => Self::lifecycle(target, true, shared).await,
+            Self::ColibriDownload(plan, max) => {
+                let source = blocking(colibri::Source::capture).await?;
+                let native = blocking(move || shared.native_competitor()).await?;
+                native.admit().await?;
+                colibri_acquisition::start(&source, &plan, max, &native).await
+            }
+            Self::ColibriPause => {
+                colibri_acquisition::pause(&blocking(colibri::Source::capture).await?).await
+            }
+            Self::ColibriSelect(plan, revision) => colibri_acquisition::select(
+                &blocking(colibri::Source::capture).await?,
+                &plan,
+                &revision,
+            )
+            .await
+            .map(|_| ()),
+            Self::ColibriLoad(plan, revision) => {
+                let source = blocking(colibri::Source::capture).await?;
+                source.admit_idle().await?;
+                let native = blocking(move || shared.native_competitor()).await?;
+                native.admit().await?;
+                let selected = colibri_acquisition::select(&source, &plan, &revision).await?;
+                native.admit().await?;
+                colibri::start_selected(&source, selected, &native).await
+            }
+            Self::ColibriLoadLocal(model, directory, revision) => {
+                let source = blocking(colibri::Source::capture).await?;
+                source.admit_idle().await?;
+                let native = blocking(move || shared.native_competitor()).await?;
+                native.admit().await?;
+                let plan = colibri_acquisition::local_plan(&source, &model, &directory).await?;
+                let selected = colibri_acquisition::select(&source, &plan, &revision).await?;
+                native.admit().await?;
+                colibri::start_selected(&source, selected, &native).await
+            }
             Self::Preset(model, options, revision) => {
                 blocking(move || {
                     let settings = shared.controller(false)?.settings;
@@ -244,11 +374,9 @@ impl Work {
                 .await
             }
             other => {
-                let allow_previous_host = matches!(other, Self::Stop(_) | Self::Down);
+                let allow_previous_host = matches!(other, Self::Down);
                 let c = blocking(move || shared.controller(allow_previous_host)).await?;
                 match other {
-                    Self::Start(id) => c.start(&id).await,
-                    Self::Stop(id) => c.stop(&id).await,
                     Self::Up => c.start_router().await,
                     Self::Down => hosting::down(&c.settings).await,
                     Self::Download(plan, max) => c.download(&plan, max).await,
@@ -279,6 +407,25 @@ fn confirmation(confirmed: bool) -> fdo::Result<()> {
     }
 }
 
+fn validate_target(target: &Target) -> fdo::Result<()> {
+    config::validate_id(&target.model).map_err(failure)?;
+    if target.runtime.len() > 96
+        || target.runtime.is_empty()
+        || !target
+            .runtime
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'-'))
+        || !(target.revision.is_empty()
+            || (target.revision.len() == 64
+                && target.revision.bytes().all(|b| b.is_ascii_hexdigit())))
+    {
+        return Err(fdo::Error::InvalidArgs(
+            "Invalid runtime-qualified target bounds".into(),
+        ));
+    }
+    Ok(())
+}
+
 struct Service {
     shared: Arc<Shared>,
     executable: Arc<update::Executable>,
@@ -291,7 +438,8 @@ impl Service {
         work: Work,
         emitter: &SignalEmitter<'_>,
     ) -> fdo::Result<String> {
-        let (operation, accepted) = self.shared.accept(kind, model).map_err(failure)?;
+        let runtime = work.runtime().map_err(failure)?;
+        let (operation, accepted) = self.shared.accept(kind, model, &runtime).map_err(failure)?;
         if !accepted {
             return Ok(operation.id);
         }
@@ -319,7 +467,7 @@ impl Service {
     }
 }
 
-#[zbus::interface(name = "io.github.nogcio.Herd.Backend1")]
+#[zbus::interface(name = "io.github.nogcio.Herd.Backend2")]
 impl Service {
     async fn version(&self) -> u32 {
         loop {
@@ -327,7 +475,7 @@ impl Service {
             tokio::pin!(ready);
             ready.as_mut().enable();
             if self.shared.store().initialized {
-                return 1;
+                return API_VERSION;
             }
             ready.await;
         }
@@ -383,6 +531,155 @@ impl Service {
         let mut report = s.report.clone();
         report.operations = s.jobs.iter().cloned().collect();
         report
+    }
+    async fn runtimes(&self) -> fdo::Result<Vec<crate::runtime::RuntimeRecord>> {
+        runtime_records(&self.shared).await.map_err(failure)
+    }
+    async fn colibri_catalogue(&self) -> fdo::Result<Vec<colibri_acquisition::Choice>> {
+        let source = blocking(colibri::Source::capture).await.map_err(failure)?;
+        colibri_acquisition::catalogue(&source)
+            .await
+            .map_err(failure)
+    }
+    async fn colibri_transfer_plan(&self) -> fdo::Result<Vec<colibri_acquisition::Plan>> {
+        blocking(|| colibri_acquisition::transfer_plan(&colibri::Source::capture()?))
+            .await
+            .map_err(failure)
+    }
+    async fn colibri_plan(
+        &self,
+        model: &str,
+        directory: &str,
+        revision: &str,
+    ) -> fdo::Result<colibri_acquisition::Plan> {
+        if !revision.is_empty()
+            && (revision.len() != 40 || !revision.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(failure("Invalid immutable Colibri revision"));
+        }
+        let source = blocking(colibri::Source::capture).await.map_err(failure)?;
+        colibri_acquisition::plan(
+            &source,
+            model,
+            directory,
+            (!revision.is_empty()).then_some(revision),
+        )
+        .await
+        .map_err(failure)
+    }
+    fn colibri_download(
+        &self,
+        plan: colibri_acquisition::Plan,
+        max_bytes: u64,
+        confirmed: bool,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        confirmation(confirmed)?;
+        colibri_acquisition::valid_plan(&plan).map_err(failure)?;
+        let model = plan.id.clone();
+        self.submit(
+            "colibri-download",
+            &model,
+            Work::ColibriDownload(plan, max_bytes),
+            &emitter,
+        )
+    }
+    fn colibri_pause(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        self.submit("colibri-pause", "", Work::ColibriPause, &emitter)
+    }
+    fn colibri_select(
+        &self,
+        plan: colibri_acquisition::Plan,
+        revision: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        colibri_acquisition::valid_plan(&plan).map_err(failure)?;
+        if !revision.is_empty()
+            && (revision.len() != 64 || !revision.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(failure("Invalid Colibri configuration revision"));
+        }
+        let model = plan.id.clone();
+        self.submit(
+            "colibri-select",
+            &model,
+            Work::ColibriSelect(plan, revision.into()),
+            &emitter,
+        )
+    }
+    fn colibri_load(
+        &self,
+        plan: colibri_acquisition::Plan,
+        revision: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        colibri_acquisition::valid_plan(&plan).map_err(failure)?;
+        if !revision.is_empty()
+            && (revision.len() != 64 || !revision.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(failure("Invalid Colibri configuration revision"));
+        }
+        let model = plan.id.clone();
+        self.submit(
+            "start",
+            &model,
+            Work::ColibriLoad(plan, revision.into()),
+            &emitter,
+        )
+    }
+    fn colibri_load_local(
+        &self,
+        model: &str,
+        directory: &str,
+        revision: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        config::validate_id(model).map_err(failure)?;
+        if directory.len() > 4096
+            || !std::path::Path::new(directory).is_absolute()
+            || (!revision.is_empty()
+                && (revision.len() != 64 || !revision.bytes().all(|b| b.is_ascii_hexdigit())))
+        {
+            return Err(failure("Invalid Colibri local artifact selection"));
+        }
+        self.submit(
+            "start",
+            model,
+            Work::ColibriLoadLocal(model.into(), directory.into(), revision.into()),
+            &emitter,
+        )
+    }
+    async fn colibri_settings(&self) -> fdo::Result<colibri_settings::Draft> {
+        blocking(|| colibri_settings::read(&colibri::Source::capture()?))
+            .await
+            .map_err(failure)
+    }
+    fn save_colibri_settings(
+        &self,
+        draft: colibri_settings::Draft,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        if draft.arguments.len() > colibri_settings::ARGUMENTS.len()
+            || draft.environment.len() > colibri_settings::ENVIRONMENT.len()
+            || draft.flags.len() > colibri_settings::FLAGS.len()
+            || draft.revision.len() != 64
+            || draft
+                .arguments
+                .values()
+                .chain(draft.environment.values())
+                .any(|v| v.len() > 4096)
+        {
+            return Err(failure("Invalid Colibri native draft bounds"));
+        }
+        self.submit(
+            "colibri-settings",
+            "",
+            Work::ColibriSettings(draft),
+            &emitter,
+        )
     }
     async fn configuration(&self) -> fdo::Result<Configuration> {
         let shared = self.shared.clone();
@@ -478,20 +775,23 @@ impl Service {
     }
     fn start(
         &self,
-        model: &str,
+        target: Target,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<String> {
-        config::validate_id(model).map_err(failure)?;
-        self.submit("start", model, Work::Start(model.into()), &emitter)
+        validate_target(&target)?;
+        let model = target.model.clone();
+        self.submit("start", &model, Work::Start(target), &emitter)
     }
     fn stop(
         &self,
-        model: &str,
+        target: Target,
         confirmed: bool,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<String> {
         confirmation(confirmed)?;
-        self.submit("stop", model, Work::Stop(model.into()), &emitter)
+        validate_target(&target)?;
+        let model = target.model.clone();
+        self.submit("stop", &model, Work::Stop(target), &emitter)
     }
     fn server_up(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> fdo::Result<String> {
         self.submit("server-up", "", Work::Up, &emitter)
@@ -589,6 +889,27 @@ impl Service {
     ) -> zbus::Result<()>;
 }
 
+async fn runtime_records(shared: &Shared) -> Result<Vec<crate::runtime::RuntimeRecord>> {
+    let pinned = shared.store().preferences.clone();
+    let records = crate::engines::inventory::observe(inventory::Locations::capture()).await?;
+    blocking(move||{
+        let mut records=records;
+        if let Some(settings)=pinned{
+            let current=Settings::read();
+            if let Some(record)=records.iter_mut().find(|r|r.engine=="llama_cpp"){
+                let valid=current.as_ref().is_ok_and(|s|s==&settings)&&record.endpoint==settings.endpoint&&record.configuration=="valid";
+                record.endpoint.clone_from(&settings.endpoint);
+                if !valid{
+                    record.configuration="invalid".into();record.state="unknown".into();record.observation="unknown".into();
+                    record.error="Previous llama.cpp host retained; native configuration changed or is invalid".into();
+                    for other in records.iter_mut().filter(|r|r.engine!="llama_cpp"){other.can_start=false;other.can_load_acquired=false;}
+                }
+            }
+        }
+        Ok(records)
+    }).await
+}
+
 async fn observe(shared: &Shared, emitter: &SignalEmitter<'_>) {
     let _observing = shared.observing.lock().await;
     let result = async {
@@ -598,9 +919,13 @@ async fn observe(shared: &Shared, emitter: &SignalEmitter<'_>) {
             .map(|s| s.into_iter().map(Into::into).collect::<Vec<ModelRecord>>())
     }
     .await;
+    let runtimes = runtime_records(shared).await;
     let revision = {
         let mut s = shared.store();
         let previous = s.report.clone();
+        if let Ok(runtimes) = runtimes {
+            s.report.runtimes = runtimes;
+        }
         s.report.setup_required = s.preferences.is_none()
             && Settings::path().is_ok_and(|path| {
                 matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
@@ -712,7 +1037,17 @@ pub(super) async fn serve() -> Result<()> {
                 let presets = Settings::read()
                     .map(|s| s.presets)
                     .unwrap_or_else(|_| path.with_file_name("models.ini"));
-                config::watch(&[path, presets])
+                let mut paths = vec![path, presets];
+                if let Ok(source) = colibri::Source::capture() {
+                    if source.path.parent().is_some_and(|p| p.is_dir()) {
+                        paths.push(source.path.clone());
+                    } else if let Some(parent) =
+                        source.path.ancestors().skip(1).find(|p| p.is_dir())
+                    {
+                        paths.push(parent.join(".herd-colibri-watch"));
+                    }
+                }
+                config::watch(&paths)
             })
             .await;
             if let Ok((_watcher, mut events)) = watching {
@@ -865,23 +1200,23 @@ mod tests {
     fn admission_uses_canonical_native_identity_bounds() {
         let shared = Shared::new();
         for invalid in ["x".repeat(161), "namespace/repo:Q4 K".into()] {
-            assert!(shared.accept("download", &invalid).is_err());
+            assert!(shared.accept("download", &invalid, "").is_err());
             assert!(shared.store().jobs.is_empty());
         }
         let boundary = format!("{}/{}:Q4_K_M", "n".repeat(96), "r".repeat(56));
         assert_eq!(boundary.len(), 160);
-        let (accepted, _) = shared.accept("download", &boundary).unwrap();
+        let (accepted, _) = shared.accept("download", &boundary, "").unwrap();
         assert_eq!(accepted.model, boundary);
     }
     #[test]
     fn admission_is_shared_bounded_and_does_not_replay_completed_or_unknown_operations() {
         let shared = Shared::new();
-        let (first, _) = shared.accept("start", "example").unwrap();
-        assert!(shared.accept("stop", "competitor").is_err());
+        let (first, _) = shared.accept("start", "example", "").unwrap();
+        assert!(shared.accept("stop", "competitor", "").is_err());
         assert_eq!(shared.store().jobs[0], first);
         shared.complete(&first.id, Err(anyhow!("Refused: competitor unchanged")));
         for _ in 0..70 {
-            let (op, _) = shared.accept("verify", "example").unwrap();
+            let (op, _) = shared.accept("verify", "example", "").unwrap();
             shared.complete(&op.id, Ok(()));
         }
         assert_eq!(shared.store().jobs.len(), 64);
@@ -893,15 +1228,15 @@ mod tests {
     #[test]
     fn concurrent_router_requests_share_only_the_running_startup() {
         let shared = Shared::new();
-        let (first, accepted) = shared.accept("server-up", "").unwrap();
+        let (first, accepted) = shared.accept("server-up", "", "").unwrap();
         assert!(accepted);
-        let (second, accepted) = shared.accept("server-up", "").unwrap();
+        let (second, accepted) = shared.accept("server-up", "", "").unwrap();
         assert!(!accepted);
         assert_eq!(first, second);
         assert_eq!(shared.store().jobs.len(), 1);
-        assert!(shared.accept("stop", "competitor").is_err());
+        assert!(shared.accept("stop", "competitor", "").is_err());
         shared.complete(&first.id, Err(anyhow!("Startup failed")));
-        let (retry, accepted) = shared.accept("server-up", "").unwrap();
+        let (retry, accepted) = shared.accept("server-up", "", "").unwrap();
         assert!(accepted);
         assert_ne!(first.id, retry.id);
     }
@@ -909,7 +1244,7 @@ mod tests {
     #[test]
     fn draining_blocks_new_work_without_cancelling_the_accepted_operation() {
         let shared = Shared::new();
-        let (accepted, _) = shared.accept("set", "example").unwrap();
+        let (accepted, _) = shared.accept("set", "example", "").unwrap();
         let competitor = ModelRecord {
             id: "competitor".into(),
             state: "ready".into(),
@@ -918,7 +1253,7 @@ mod tests {
         shared.store().report.models.push(competitor.clone());
         shared.store().updating = true;
         for kind in ["server-up", "start", "stop", "setup", "download"] {
-            assert!(shared.accept(kind, "").is_err());
+            assert!(shared.accept(kind, "", "").is_err());
         }
         assert_eq!(shared.store().jobs.len(), 1);
         assert_eq!(shared.store().jobs[0], accepted);
@@ -926,7 +1261,7 @@ mod tests {
         assert_eq!(shared.store().jobs[0].status, "succeeded");
         assert_eq!(shared.store().report.models, [competitor]);
         shared.store().updating = false;
-        assert!(shared.accept("set", "example").is_ok());
+        assert!(shared.accept("set", "example", "").is_ok());
     }
 
     #[test]
@@ -938,7 +1273,7 @@ mod tests {
         assert!(shared.store().jobs.is_empty());
         shared.store().updating = false;
         shared.store().update_failed = true;
-        assert!(shared.accept("set", "example").is_ok());
+        assert!(shared.accept("set", "example", "").is_ok());
         assert!(!shared.store().updating);
         assert!(shared.store().update_failed);
         assert_eq!(shared.prepare_update(true).unwrap(), (true, true));

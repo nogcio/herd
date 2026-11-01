@@ -84,6 +84,13 @@ once per launch; the panel and CLI do not. Startup errors remain visible and
 require an explicit retry. No model is loaded and no weights are downloaded by
 first-run setup or window startup.
 
+Startup recovers an abandoned router control socket automatically, including
+after reboot. This recovery does not load models, change presets, or stop a
+host. If the port is occupied, the socket still accepts connections, or its
+state cannot be verified, startup fails safely instead of replacing it. Correct
+invalid settings or missing runtime dependencies before explicitly retrying;
+reinstalling Herd does not reset user data or repair an unrelated runtime.
+
 ## Updates and previous user-local installations
 
 Save drafts, close the application and remove its running panel applet before
@@ -108,10 +115,14 @@ For headless maintenance, `herd --json backend-update` requests the same
 management-only transition. Ordinary status/configuration commands remain
 passive and do not request updates.
 
-The first installation over a backend predating this protocol needs a one-time
-restart of `herd.service`, after accepted operations finish. This bootstraps
-future frontend-coordinated updates; it is not a compatibility fallback that
-terminates an unknown older process automatically.
+An installation over a backend predating the update protocol or exposing an
+incompatible D-Bus interface needs a one-time restart of `herd.service`, after
+accepted operations finish and with owner authorization. In particular, the
+current `Backend2` interface cannot coordinate replacement of a running
+`Backend1` service through new clients. This bootstraps future
+frontend-coordinated updates; it is not a compatibility fallback that terminates
+an unknown older process automatically. See
+[engine integration deployment](decisions/0008-engine-integrations.md#reference-and-acceptance).
 
 Previous user-local executables and desktop/D-Bus/systemd registrations can
 shadow `/usr` package files. Pacman deliberately does not remove files from

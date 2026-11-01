@@ -1,9 +1,8 @@
-//! Native preset configuration and llama.cpp management operations.
+//! Service-owned local model management and concrete engine integrations.
 pub mod backend;
-pub mod config;
-pub mod controller;
-pub mod downloads;
-pub mod hosting;
+mod controller;
+pub mod engines;
+mod hosting;
 pub mod icons;
 pub mod model;
 mod regular_file;

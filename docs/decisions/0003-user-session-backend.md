@@ -8,8 +8,10 @@ and native presentation require interactive acceptance.
 Use one `herd-service` process, registered as a systemd user
 service named `herd.service`, with `Type=dbus` and the
 well-known session-bus name `io.github.nogcio.Herd.Backend`.
-The interface is `io.github.nogcio.Herd.Backend1`, at
-`/io/github/nogcio/Herd/Backend`. It exposes API version 1.
+The interface is `io.github.nogcio.Herd.Backend2`, at
+`/io/github/nogcio/Herd/Backend`. It exposes API version 2, including passive
+[runtime inventory](0008-engine-integrations.md). The previous interface is not
+retained.
 
 D-Bus activation starts the installed user unit on first access. Explicit login
 autostart is optional and never enabled by installation. The separate visible

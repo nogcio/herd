@@ -1,6 +1,6 @@
 //! One-shot, bounded state handoff for a coordinated management-only update.
 use super::protocol::Report;
-use crate::{config::Settings, regular_file};
+use crate::{engines::llama_cpp::config::Settings, regular_file};
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -94,7 +94,8 @@ impl Handoff {
                         && job.id.len() <= 128
                         && job.kind.len() <= 64
                         && matches!(job.status.as_str(), "succeeded" | "failed")
-                        && (job.model.is_empty() || crate::config::validate_id(&job.model).is_ok())
+                        && (job.model.is_empty()
+                            || crate::engines::llama_cpp::config::validate_id(&job.model).is_ok())
                 }),
             "Backend update state must contain only bounded terminal results"
         );

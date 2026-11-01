@@ -2,17 +2,23 @@
 pub mod protocol;
 mod service;
 mod update;
+use crate::engines::colibri::acquisition::{Choice as ColibriChoice, Plan as ColibriPlan};
+use crate::engines::colibri::settings::Draft as ColibriDraft;
+use crate::engines::llama_cpp::downloads;
+use crate::runtime::{RuntimeRecord, Target};
 use anyhow::{Result, anyhow, ensure};
 use protocol::*;
 use std::time::Duration;
 
 /// Well-known user-session service name, separate from the GUI activation name.
 pub const NAME: &str = "io.github.nogcio.Herd.Backend";
-/// Stable object path for version one of the management API.
+/// Stable object path for the management API.
 pub const PATH: &str = "/io/github/nogcio/Herd/Backend";
+/// Required typed management API version; old interfaces are not retained.
+pub const API_VERSION: u32 = 2;
 
 #[zbus::proxy(
-    interface = "io.github.nogcio.Herd.Backend1",
+    interface = "io.github.nogcio.Herd.Backend2",
     default_service = "io.github.nogcio.Herd.Backend",
     default_path = "/io/github/nogcio/Herd/Backend"
 )]
@@ -21,6 +27,32 @@ pub(crate) trait Management {
     fn prepare_update(&self) -> zbus::Result<bool>;
     fn update_status(&self) -> zbus::Result<String>;
     fn snapshot(&self) -> zbus::Result<Report>;
+    fn runtimes(&self) -> zbus::Result<Vec<RuntimeRecord>>;
+    fn colibri_catalogue(&self) -> zbus::Result<Vec<ColibriChoice>>;
+    fn colibri_transfer_plan(&self) -> zbus::Result<Vec<ColibriPlan>>;
+    fn colibri_plan(
+        &self,
+        model: &str,
+        directory: &str,
+        revision: &str,
+    ) -> zbus::Result<ColibriPlan>;
+    fn colibri_download(
+        &self,
+        plan: ColibriPlan,
+        max_bytes: u64,
+        confirmed: bool,
+    ) -> zbus::Result<String>;
+    fn colibri_pause(&self) -> zbus::Result<String>;
+    fn colibri_select(&self, plan: ColibriPlan, revision: &str) -> zbus::Result<String>;
+    fn colibri_load(&self, plan: ColibriPlan, revision: &str) -> zbus::Result<String>;
+    fn colibri_load_local(
+        &self,
+        model: &str,
+        directory: &str,
+        revision: &str,
+    ) -> zbus::Result<String>;
+    fn colibri_settings(&self) -> zbus::Result<ColibriDraft>;
+    fn save_colibri_settings(&self, draft: ColibriDraft) -> zbus::Result<String>;
     fn configuration(&self) -> zbus::Result<Configuration>;
     fn edit_preset(&self, model: &str) -> zbus::Result<PresetDraft>;
     fn save_preset(
@@ -32,9 +64,9 @@ pub(crate) trait Management {
     fn operation(&self, id: &str) -> zbus::Result<Operation>;
     fn search(&self, query: &str) -> zbus::Result<Vec<String>>;
     fn files(&self, repo: &str) -> zbus::Result<Catalogue>;
-    fn plan(&self, model: &str) -> zbus::Result<crate::downloads::Plan>;
-    fn start(&self, model: &str) -> zbus::Result<String>;
-    fn stop(&self, model: &str, confirmed: bool) -> zbus::Result<String>;
+    fn plan(&self, model: &str) -> zbus::Result<downloads::Plan>;
+    fn start(&self, target: Target) -> zbus::Result<String>;
+    fn stop(&self, target: Target, confirmed: bool) -> zbus::Result<String>;
     fn server_up(&self) -> zbus::Result<String>;
     fn server_down(&self, confirmed: bool) -> zbus::Result<String>;
     fn set_option(
@@ -48,7 +80,7 @@ pub(crate) trait Management {
     fn setup(&self, preferences: Preferences) -> zbus::Result<String>;
     fn download(
         &self,
-        plan: crate::downloads::Plan,
+        plan: downloads::Plan,
         max_bytes: u64,
         confirmed: bool,
     ) -> zbus::Result<String>;
@@ -137,7 +169,7 @@ impl Client {
             .build()
             .await?;
         ensure!(
-            proxy.version().await? == 1,
+            proxy.version().await? == API_VERSION,
             "Unsupported backend API version"
         );
         Ok(proxy)
@@ -149,6 +181,127 @@ impl Client {
     /// Observe the service's common snapshot, including configuration errors.
     pub async fn report(&self) -> Result<Report> {
         Ok(self.proxy().await?.snapshot().await?)
+    }
+    /// Inspect native runtime locations and passive endpoint observations.
+    /// No executable is run and no model readiness or ownership is inferred.
+    pub async fn runtimes(&self) -> Result<Vec<RuntimeRecord>> {
+        Ok(self.proxy().await?.runtimes().await?)
+    }
+    /// Read the installed native Colibri catalogue without setup or hardware probes.
+    pub async fn colibri_catalogue(&self) -> Result<Vec<ColibriChoice>> {
+        Ok(self.proxy().await?.colibri_catalogue().await?)
+    }
+    /// Recover the last native acquisition scope without resuming or downloading it.
+    pub async fn colibri_transfer_plan(&self) -> Result<Option<ColibriPlan>> {
+        let mut plans = self.proxy().await?.colibri_transfer_plan().await?;
+        ensure!(
+            plans.len() <= 1,
+            "Invalid Colibri transfer observation bounds"
+        );
+        Ok(plans.pop())
+    }
+    /// Review an immutable native multi-file acquisition and explicit destination.
+    pub async fn colibri_plan(&self, model: &str, directory: &str) -> Result<ColibriPlan> {
+        Ok(self
+            .proxy()
+            .await?
+            .colibri_plan(model, directory, "")
+            .await?)
+    }
+    /// Rereview the same immutable Colibri revision before resuming retained files.
+    pub async fn colibri_resume_plan(&self, plan: &ColibriPlan) -> Result<ColibriPlan> {
+        Ok(self
+            .proxy()
+            .await?
+            .colibri_plan(&plan.id, &plan.directory, &plan.revision)
+            .await?)
+    }
+    /// Explicitly acquire only the reviewed Colibri files, never build or load.
+    pub async fn colibri_download(&self, plan: &ColibriPlan, max_bytes: u64) -> Result<String> {
+        Ok(self
+            .proxy()
+            .await?
+            .colibri_download(plan.clone(), max_bytes, true)
+            .await?)
+    }
+    /// Pause only the recorded Colibri acquisition host, retaining partial files.
+    pub async fn colibri_pause(&self) -> Result<String> {
+        Ok(self.proxy().await?.colibri_pause().await?)
+    }
+    /// Select a verified download in native setup, without starting or stopping anything.
+    pub async fn colibri_select(&self, plan: &ColibriPlan, revision: &str) -> Result<String> {
+        Ok(self
+            .proxy()
+            .await?
+            .colibri_select(plan.clone(), revision)
+            .await?)
+    }
+    /// Explicitly select and load verified Colibri weights in one service-owned operation.
+    pub async fn colibri_load(&self, plan: &ColibriPlan, revision: &str) -> Result<String> {
+        Ok(self
+            .proxy()
+            .await?
+            .colibri_load(plan.clone(), revision)
+            .await?)
+    }
+    /// Load an existing native catalogue artifact without downloading any payload.
+    pub async fn colibri_load_local(
+        &self,
+        model: &str,
+        directory: &str,
+        revision: &str,
+    ) -> Result<String> {
+        Ok(self
+            .proxy()
+            .await?
+            .colibri_load_local(model, directory, revision)
+            .await?)
+    }
+    /// Edit concrete native Colibri options without exposing authentication values.
+    pub async fn colibri_settings(&self) -> Result<ColibriDraft> {
+        Ok(self.proxy().await?.colibri_settings().await?)
+    }
+    /// Atomically save a complete Colibri draft; never reload or restart inference.
+    pub async fn save_colibri_settings(&self, draft: &ColibriDraft) -> Result<String> {
+        Ok(self
+            .proxy()
+            .await?
+            .save_colibri_settings(draft.clone())
+            .await?)
+    }
+    /// Resolve a runtime ID or engine selector without mixing native model identities.
+    pub async fn target(&self, selector: &str, model: &str) -> Result<Target> {
+        let mut records = self.report().await?.runtimes;
+        if records.is_empty() {
+            records = self.runtimes().await?;
+        }
+        let mut matches = records
+            .iter()
+            .filter(|r| r.id == selector || r.engine == selector);
+        let record = matches
+            .next()
+            .ok_or_else(|| anyhow!("Unknown runtime selection"))?;
+        ensure!(
+            matches.next().is_none(),
+            "Runtime selection is ambiguous; use its exact ID"
+        );
+        Ok(Target {
+            runtime: record.id.clone(),
+            model: if model.is_empty() {
+                record.profile.clone()
+            } else {
+                model.into()
+            },
+            revision: record.revision.clone(),
+        })
+    }
+    /// Submit an exact runtime-qualified start; capabilities are rechecked by the service.
+    pub async fn start_target(&self, target: &Target) -> Result<String> {
+        Ok(self.proxy().await?.start(target.clone()).await?)
+    }
+    /// Stop the selected runtime instance only after caller confirmation.
+    pub async fn stop_target(&self, target: &Target, confirmed: bool) -> Result<String> {
+        Ok(self.proxy().await?.stop(target.clone(), confirmed).await?)
     }
     /// Convert wire observations for native presentation.
     pub async fn snapshot(&self) -> Result<Vec<crate::model::Snapshot>> {
@@ -212,20 +365,22 @@ impl Client {
         Ok(self.proxy().await?.search(query).await?)
     }
     /// Inspect supported public files through the backend.
-    pub async fn files(&self, repo: &str) -> Result<crate::downloads::Catalogue> {
+    pub async fn files(&self, repo: &str) -> Result<downloads::Catalogue> {
         Ok(self.proxy().await?.files(repo).await?.into())
     }
     /// Inspect one acquisition through the backend.
-    pub async fn plan(&self, model: &str) -> Result<crate::downloads::Plan> {
+    pub async fn plan(&self, model: &str) -> Result<downloads::Plan> {
         Ok(self.proxy().await?.plan(model).await?)
     }
     /// Request a load without eviction; returns a service-owned operation ID.
     pub async fn start(&self, model: &str) -> Result<String> {
-        Ok(self.proxy().await?.start(model).await?)
+        self.start_target(&self.target("llama_cpp", model).await?)
+            .await
     }
     /// Request an explicitly confirmed unload.
     pub async fn stop(&self, model: &str, confirmed: bool) -> Result<String> {
-        Ok(self.proxy().await?.stop(model, confirmed).await?)
+        self.stop_target(&self.target("llama_cpp", model).await?, confirmed)
+            .await
     }
     /// Request empty router hosting, never model loading.
     pub async fn server_up(&self) -> Result<String> {
@@ -256,7 +411,7 @@ impl Client {
         Ok(self.proxy().await?.setup(preferences).await?)
     }
     /// Request a reviewed explicit native acquisition.
-    pub async fn download(&self, plan: &crate::downloads::Plan, max_bytes: u64) -> Result<String> {
+    pub async fn download(&self, plan: &downloads::Plan, max_bytes: u64) -> Result<String> {
         Ok(self
             .proxy()
             .await?
@@ -366,7 +521,7 @@ mod tests {
         report: Report,
     }
 
-    #[zbus::interface(name = "io.github.nogcio.Herd.Backend1")]
+    #[zbus::interface(name = "io.github.nogcio.Herd.Backend2")]
     impl UpdateBackend {
         fn version(&self) -> u32 {
             self.version
@@ -457,12 +612,12 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(15), async {
             let (_dir, mut bus, address) = private_update_bus().await;
             for (stale, version, failed) in [
-                (false, 1, false),
-                (true, 1, false),
-                (true, 2, false),
-                (true, 1, true),
+                (false, API_VERSION, false),
+                (true, API_VERSION, false),
+                (true, API_VERSION + 1, false),
+                (true, API_VERSION, true),
             ] {
-                let mut backend = update_backend(stale, 1, "succeeded");
+                let mut backend = update_backend(stale, API_VERSION, "succeeded");
                 backend.failed = failed;
                 let requested = backend.requested.clone();
                 let original_calls = backend.calls.clone();
@@ -526,7 +681,7 @@ mod tests {
                     .await
                     .unwrap();
                 let result = task.await.unwrap();
-                if version == 1 {
+                if version == API_VERSION {
                     result.unwrap();
                     assert_eq!(client.report().await.unwrap(), expected);
                     assert_eq!(*replacement_calls.lock().unwrap(), ["snapshot"]);
@@ -551,7 +706,7 @@ mod tests {
     async fn operation_wait_only_retries_readonly_calls_during_the_owner_gap() {
         tokio::time::timeout(Duration::from_secs(15), async {
             let (_dir, mut bus, address) = private_update_bus().await;
-            let backend = update_backend(false, 1, "running");
+            let backend = update_backend(false, API_VERSION, "running");
             let queried = backend.queried.clone();
             let original_calls = backend.calls.clone();
             let original = zbus::connection::Builder::address(address.as_str())
@@ -579,7 +734,7 @@ mod tests {
                     .await
                     .is_err()
             );
-            let backend = update_backend(false, 1, "succeeded");
+            let backend = update_backend(false, API_VERSION, "succeeded");
             let calls = backend.calls.clone();
             let expected = backend.report.clone();
             let replacement = zbus::connection::Builder::address(address.as_str())
@@ -611,10 +766,10 @@ mod tests {
         .expect("Readonly operation wait test timed out");
     }
 
-    #[zbus::interface(name = "io.github.nogcio.Herd.Backend1")]
+    #[zbus::interface(name = "io.github.nogcio.Herd.Backend2")]
     impl DownloadObservation {
         fn version(&self) -> u32 {
-            1
+            API_VERSION
         }
         fn snapshot(&self) -> Report {
             self.0.clone()
@@ -702,7 +857,7 @@ mod tests {
                 let header = message.header();
                 if header.message_type() == zbus::message::Type::MethodCall
                     && header.interface().map(|i| i.as_str())
-                        == Some("io.github.nogcio.Herd.Backend1")
+                        == Some("io.github.nogcio.Herd.Backend2")
                 {
                     match header.member().unwrap().as_str() {
                         "Snapshot" => snapshots += 1,

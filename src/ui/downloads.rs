@@ -6,9 +6,9 @@ use cosmic::{
     iced::{Alignment, Length},
     theme, widget,
 };
-use herd::downloads::{Catalogue, Plan};
+use herd::engines::llama_cpp::downloads::{Catalogue, Plan};
 
-fn size_label(bytes: u64) -> String {
+pub(super) fn size_label(bytes: u64) -> String {
     let (unit, divisor) = if bytes >= 1024 * 1024 * 1024 {
         ("gib", 1073741824.)
     } else {

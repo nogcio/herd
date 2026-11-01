@@ -1,5 +1,6 @@
 //! CLI admission owns help/version/argument handling before any desktop or service access.
 use assert_cmd::{Command, cargo::cargo_bin_cmd};
+use herd::engines::llama_cpp::downloads;
 use std::time::Duration;
 
 fn isolated(mut command: Command) -> Command {
@@ -87,22 +88,22 @@ struct DownloadState {
 }
 
 struct DownloadBackend {
-    plan: herd::downloads::Plan,
+    plan: downloads::Plan,
     state: std::sync::Arc<std::sync::Mutex<DownloadState>>,
 }
 
-#[zbus::interface(name = "io.github.nogcio.Herd.Backend1")]
+#[zbus::interface(name = "io.github.nogcio.Herd.Backend2")]
 impl DownloadBackend {
     fn version(&self) -> u32 {
-        1
+        herd::backend::API_VERSION
     }
 
-    fn plan(&self, model: &str) -> herd::downloads::Plan {
+    fn plan(&self, model: &str) -> downloads::Plan {
         assert_eq!(model, self.plan.model);
         self.plan.clone()
     }
 
-    fn download(&self, plan: herd::downloads::Plan, max_bytes: u64, confirmed: bool) -> String {
+    fn download(&self, plan: downloads::Plan, max_bytes: u64, confirmed: bool) -> String {
         assert_eq!(plan, self.plan);
         assert_eq!(max_bytes, self.plan.size_bytes);
         assert!(confirmed);
@@ -114,6 +115,7 @@ impl DownloadBackend {
         assert_eq!(id, "test-download-1");
         let state = self.state.lock().unwrap();
         herd::backend::protocol::Operation {
+            runtime: String::new(),
             id: id.into(),
             kind: "download".into(),
             model: self.plan.model.clone(),
@@ -191,7 +193,7 @@ async fn download_announces_accepted_id_before_waiting_and_preserves_it_on_failu
             competitor: competitor.clone(),
             ..Default::default()
         }));
-        let plan = herd::downloads::Plan {
+        let plan = downloads::Plan {
             model: "example/tiny-GGUF:Q4_K_M".into(),
             repo: "example/tiny-GGUF".into(),
             revision: "a".repeat(40),

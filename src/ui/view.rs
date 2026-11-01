@@ -81,6 +81,13 @@ impl Applet {
             models = models.add(self.model_row(snapshot, false));
         }
         content = content.push(widget::scrollable(models).height(Length::Shrink));
+        for runtime in self
+            .runtimes
+            .iter()
+            .filter(|r| r.engine == "colibri" && (r.configuration != "absent" || r.managed))
+        {
+            content = content.push(self.runtime_card(runtime));
+        }
         content = content.push(
             widget::button::text(tr("manage-models"))
                 .leading_icon(widget::icon::from_name("preferences-system-symbolic"))
@@ -267,6 +274,28 @@ impl Applet {
     }
 
     pub(super) fn stop_confirmation(&self) -> Option<Element<'_, Message>> {
+        if self.mode != super::Mode::Management {
+            return None;
+        }
+        if let Some(target) = &self.pending_runtime_stop {
+            return Some(
+                widget::dialog()
+                    .title(tr("stop-colibri-confirm"))
+                    .body(format!(
+                        "{}\n\n{}",
+                        target.runtime,
+                        tr("stop-colibri-warning")
+                    ))
+                    .primary_action(
+                        widget::button::destructive(tr("runtime-stop"))
+                            .on_press_maybe((!self.busy).then_some(Message::ConfirmStop)),
+                    )
+                    .secondary_action(
+                        widget::button::text(tr("cancel")).on_press(Message::CancelStop),
+                    )
+                    .into(),
+            );
+        }
         if self.mode != super::Mode::Management {
             return None;
         }

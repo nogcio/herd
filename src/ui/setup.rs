@@ -4,7 +4,7 @@ use super::{Applet, Message};
 use cosmic::{Element, prelude::*, widget};
 use herd::{
     backend::{Client, protocol::Preferences},
-    config::Settings,
+    engines::llama_cpp::config::Settings,
 };
 use std::path::PathBuf;
 
@@ -209,6 +209,7 @@ impl Applet {
         report: &herd::backend::protocol::Report,
     ) -> Option<Message> {
         if self.mode != super::Mode::Management
+            || self.engine != 0
             || self.busy
             || report.revision == 0
             || self.router_start_requested
@@ -322,7 +323,8 @@ impl Applet {
                         widget::button::suggested(tr("register-file")).on_press_maybe(
                             (!self.busy
                                 && self.setup.file.is_some()
-                                && herd::config::validate_id(&self.setup.id).is_ok())
+                                && herd::engines::llama_cpp::config::validate_id(&self.setup.id)
+                                    .is_ok())
                             .then_some(Message::Setup(Event::Import)),
                         ),
                     ),

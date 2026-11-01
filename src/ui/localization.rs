@@ -45,8 +45,8 @@ pub(super) fn operation(kind: &str) -> String {
         "start" => "starting-model",
         "stop" => "stopping-model",
         "server-up" => "starting-router",
-        "download" => "submitting-download",
-        "pause" => "pausing-download",
+        "download" | "colibri-download" => "submitting-download",
+        "pause" | "colibri-pause" => "pausing-download",
         "remove" => "removing-model",
         _ => "working",
     })

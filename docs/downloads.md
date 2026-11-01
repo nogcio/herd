@@ -1,5 +1,9 @@
 # Model acquisition
 
+This page describes llama.cpp's single-file GGUF/cache contract. Colibri uses
+its own native multi-file catalogue, downloader and immutable acquisition plans;
+see [Colibri acquisition and user workflow](colibri.md).
+
 Cache mutations validate the bounded native unfinished-download journal before
 dispatch. Recorded partial paths must name hexadecimal blob
 `.downloadInProgress` files

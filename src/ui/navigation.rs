@@ -7,6 +7,7 @@ use cosmic::{Element, iced::Length, theme, widget};
 pub enum Page {
     #[default]
     Models,
+    Runtimes,
     Search,
     Downloads,
     Import,
@@ -24,6 +25,7 @@ impl Default for Navigation {
         let mut model = widget::nav_bar::Model::default();
         for (page, label, icon) in [
             (Page::Models, "models", "view-grid-symbolic"),
+            (Page::Runtimes, "runtimes", "applications-system-symbolic"),
             (Page::Search, "find-models", "system-search-symbolic"),
             (Page::Downloads, "downloads", "folder-download-symbolic"),
         ] {
@@ -48,6 +50,10 @@ impl Default for Navigation {
 impl Applet {
     pub(super) fn select_page(&mut self, page: Page) {
         if self.navigation.page != page {
+            if self.colibri_editor.as_ref().is_none_or(|e| !e.saving) {
+                self.colibri_editor_generation = self.colibri_editor_generation.wrapping_add(1);
+            }
+            self.colibri.cancel_review();
             self.downloads.cancel_review();
             self.cancel_removal_review();
         }
@@ -66,6 +72,12 @@ impl Applet {
         }
     }
     pub(super) fn page_view(&self) -> Element<'_, Message> {
+        if self.navigation.page == Page::Runtimes {
+            return self.runtimes_view();
+        }
+        if self.engine == 1 {
+            return self.colibri_page();
+        }
         if matches!(self.navigation.page, Page::Models | Page::Downloads) {
             return self.manager_content();
         }

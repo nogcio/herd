@@ -1,5 +1,9 @@
 //! Panel/popup integration follows pop-os/cosmic-applet-template (libcosmic API).
 //! No service-management logic belongs in this module.
+#[path = "ui/colibri.rs"]
+mod colibri;
+#[path = "ui/colibri_editor.rs"]
+mod colibri_editor;
 #[path = "ui/downloads.rs"]
 mod downloads;
 #[path = "ui/editor.rs"]
@@ -12,6 +16,8 @@ mod localization;
 mod manager;
 #[path = "ui/navigation.rs"]
 mod navigation;
+#[path = "ui/runtimes.rs"]
+mod runtimes;
 #[path = "ui/setup.rs"]
 mod setup;
 #[path = "ui/view.rs"]
@@ -57,9 +63,12 @@ impl cosmic::app::CosmicFlags for Flags {
 pub struct Applet {
     core: cosmic::Core,
     mode: Mode,
+    engine: usize,
+    engine_initialized: bool,
     popup: Option<Id>,
     controller: Option<Arc<Client>>,
     snapshots: Vec<Snapshot>,
+    runtimes: Vec<herd::runtime::RuntimeRecord>,
     error: Option<String>,
     discovery_error: Option<String>,
     setup_required: bool,
@@ -67,6 +76,7 @@ pub struct Applet {
     router_start_requested: bool,
     pending_close: bool,
     pending_stop: Option<String>,
+    pending_runtime_stop: Option<herd::runtime::Target>,
     pending_removal: Option<herd::backend::protocol::RemovalPlan>,
     removal_generation: u64,
     removal_review: Option<u64>,
@@ -81,10 +91,16 @@ pub struct Applet {
     navigation: navigation::Navigation,
     downloads: downloads::Browser,
     setup: setup::Form,
+    colibri: colibri::Browser,
+    colibri_editor: Option<colibri_editor::Editor>,
+    colibri_editor_generation: u64,
 }
 
 #[derive(Clone)]
 pub enum Message {
+    ColibriEditor(colibri_editor::Event),
+    EngineSelected(usize),
+    Colibri(colibri::Event),
     Editor(editor::Event),
     Setup(setup::Event),
     TogglePopup,
@@ -109,16 +125,24 @@ pub enum Message {
     CancelDownload,
     SearchResults(u64, Result<Vec<String>, String>),
     InspectRepository(String),
-    RepositoryResult(u64, Result<herd::downloads::Catalogue, String>),
-    ChooseDownload(herd::downloads::Plan),
+    RepositoryResult(
+        u64,
+        Result<herd::engines::llama_cpp::downloads::Catalogue, String>,
+    ),
+    ChooseDownload(herd::engines::llama_cpp::downloads::Plan),
     ReviewDownload(String),
-    DownloadPlanReady(u64, Result<herd::downloads::Plan, String>),
+    DownloadPlanReady(
+        u64,
+        Result<herd::engines::llama_cpp::downloads::Plan, String>,
+    ),
     SubmitDownload,
     DownloadSubmitted(Result<(), String>),
     PauseDownload(String),
     Edit(String),
     Refreshed(Result<herd::backend::protocol::Report, String>),
     Start(String),
+    StartRuntime(herd::runtime::Target),
+    AskStopRuntime(herd::runtime::Target),
     AskStop(String),
     ConfirmStop,
     CancelStop,
@@ -135,6 +159,9 @@ impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Controller contains an opaque backend, intentionally not Debug.
         f.write_str(match self {
+            Self::ColibriEditor(_) => "ColibriEditor",
+            Self::EngineSelected(_) => "EngineSelected",
+            Self::Colibri(_) => "Colibri",
             Self::Editor(_) => "Editor",
             Self::Setup(_) => "Setup",
             Self::TogglePopup => "TogglePopup",
@@ -169,6 +196,8 @@ impl std::fmt::Debug for Message {
             Self::Edit(_) => "Edit",
             Self::Refreshed(_) => "Refreshed",
             Self::Start(_) => "Start",
+            Self::StartRuntime(_) => "StartRuntime",
+            Self::AskStopRuntime(_) => "AskStopRuntime",
             Self::AskStop(_) => "AskStop",
             Self::ConfirmStop => "ConfirmStop",
             Self::CancelStop => "CancelStop",
@@ -321,7 +350,19 @@ impl cosmic::Application for Applet {
             return Vec::new();
         }
         vec![
-            self.add_menu(),
+            cosmic::widget::dropdown(
+                &["llama.cpp", "Colibri"],
+                Some(self.engine),
+                Message::EngineSelected,
+            )
+            .into(),
+            if self.engine == 0 {
+                self.add_menu()
+            } else {
+                cosmic::widget::button::standard(tr("find-models"))
+                    .on_press(Message::Navigate(navigation::Page::Search))
+                    .into()
+            },
             cosmic::widget::button::icon(cosmic::widget::icon::from_name("view-refresh-symbolic"))
                 .name(tr("refresh"))
                 .on_press_maybe(
@@ -343,10 +384,16 @@ impl cosmic::Application for Applet {
     }
 
     fn context_drawer(&self) -> Option<cosmic::app::context_drawer::ContextDrawer<'_, Message>> {
+        if self.engine == 1 {
+            return self.colibri_drawer();
+        }
         self.settings_drawer()
     }
 
     fn on_context_drawer(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.engine == 1 && !self.core.window.show_context {
+            return self.colibri_editor_event(colibri_editor::Event::Close);
+        }
         if !self.core.window.show_context
             && let Some(id) = self.active_editor
         {
@@ -357,6 +404,8 @@ impl cosmic::Application for Applet {
 
     fn dialog(&self) -> Option<Element<'_, Message>> {
         self.removal_confirmation()
+            .or_else(|| self.colibri_editor_confirmation())
+            .or_else(|| self.colibri_confirmation())
             .or_else(|| self.stop_confirmation())
             .or_else(|| self.download_confirmation())
             .or_else(|| self.editor_confirmation())
@@ -367,6 +416,15 @@ impl cosmic::Application for Applet {
         self.downloads.cancel_review();
         self.downloads.selected = None;
         self.pending_stop = None;
+        self.pending_runtime_stop = None;
+        self.colibri.cancel_review();
+        if let Some(editor) = &mut self.colibri_editor
+            && editor.confirm_close
+        {
+            editor.confirm_close = false;
+            self.pending_close = false;
+            return Task::none();
+        }
         self.cancel_editor_confirmation()
     }
 
@@ -396,6 +454,30 @@ impl cosmic::Application for Applet {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::ColibriEditor(event) => return self.colibri_editor_event(event),
+            Message::EngineSelected(index) if index < 2 => {
+                self.engine_initialized = true;
+                if self.colibri_editor.as_ref().is_none_or(|e| !e.saving) {
+                    self.colibri_editor_generation = self.colibri_editor_generation.wrapping_add(1);
+                }
+                self.engine = index;
+                self.colibri.cancel_review();
+                self.downloads.cancel_review();
+                self.cancel_removal_review();
+                if index == 1 {
+                    self.router_start_requested = true;
+                    self.setup_requested = true;
+                    self.core.set_show_context(false);
+                }
+                if matches!(
+                    self.navigation.page,
+                    navigation::Page::Import | navigation::Page::Setup
+                ) {
+                    self.select_page(navigation::Page::Models);
+                }
+                return self.refresh_colibri_catalogue();
+            }
+            Message::Colibri(event) => return self.colibri_event(event),
             Message::Editor(event) => return self.editor_event(event),
             Message::Setup(event) => return self.setup_event(event),
             Message::ShowSetup => self.select_page(navigation::Page::Setup),
@@ -406,7 +488,7 @@ impl cosmic::Application for Applet {
             Message::DownloadQuery(query) => self.downloads.change_query(query),
             Message::SearchDownloads => {
                 let query = self.downloads.query.trim().to_owned();
-                if herd::downloads::validate_repo(&query).is_ok() {
+                if herd::engines::llama_cpp::downloads::validate_repo(&query).is_ok() {
                     return self.update(Message::InspectRepository(query));
                 }
                 let ticket = self.downloads.request();
@@ -593,8 +675,31 @@ impl cosmic::Application for Applet {
                 let mut artwork = Task::none();
                 match snapshots {
                     Ok(report) => {
+                        if !self.engine_initialized && !report.runtimes.is_empty() {
+                            self.engine_initialized = true;
+                            if report.runtimes.iter().any(|r| {
+                                r.engine == "llama_cpp"
+                                    && r.configuration == "absent"
+                                    && !r.executable_found
+                            }) && report.runtimes.iter().any(|r| {
+                                r.engine == "colibri"
+                                    && (r.executable_found || r.configuration == "valid")
+                            }) {
+                                self.engine = 1;
+                                self.router_start_requested = true;
+                                self.setup_requested = true;
+                            }
+                        }
                         let startup = self.startup_action(&report);
                         self.setup_required = report.setup_required;
+                        self.runtimes = report.runtimes;
+                        if let Some(editor) = &mut self.colibri_editor
+                            && self.runtimes.iter().any(|r| {
+                                r.engine == "colibri" && r.revision != editor.original.revision
+                            })
+                        {
+                            editor.stale = true;
+                        }
                         self.snapshots = report.models.into_iter().map(Into::into).collect();
                         self.discovery_error = (!report.error.is_empty()).then_some(report.error);
                         self.shared_operation = report
@@ -603,6 +708,8 @@ impl cosmic::Application for Applet {
                             .find(|o| o.status == "running")
                             .map(|o| format!("{} {}", localization::operation(&o.kind), o.model));
                         artwork = self.icons.schedule(&self.snapshots);
+                        artwork = Task::batch([artwork, self.restore_colibri()]);
+                        artwork = Task::batch([artwork, self.refresh_colibri_catalogue()]);
                         if let Some(startup) = startup {
                             artwork = Task::batch([
                                 artwork,
@@ -619,6 +726,11 @@ impl cosmic::Application for Applet {
                     }
                     Err(error) => {
                         self.pending_stop = None;
+                        self.pending_runtime_stop = None;
+                        for runtime in &mut self.runtimes {
+                            runtime.can_start = false;
+                            runtime.can_stop = false;
+                        }
                         self.discovery_error =
                             Some(format!("{error}\n{}", tr("stale-observations")));
                     }
@@ -627,13 +739,27 @@ impl cosmic::Application for Applet {
                 return artwork;
             }
             Message::Start(id) => return self.operate(id, false),
-            Message::AskStop(id) if !self.busy => self.pending_stop = Some(id),
+            Message::StartRuntime(target) => return self.operate_runtime(target, false),
+            Message::AskStopRuntime(target) if !self.busy => {
+                self.pending_stop = None;
+                self.pending_runtime_stop = Some(target);
+            }
+            Message::AskStop(id) if !self.busy => {
+                self.pending_runtime_stop = None;
+                self.pending_stop = Some(id);
+            }
             Message::ConfirmStop => {
+                if let Some(target) = self.pending_runtime_stop.clone() {
+                    return self.operate_runtime(target, true);
+                }
                 if let Some(id) = self.pending_stop.clone() {
                     return self.operate(id, true);
                 }
             }
-            Message::CancelStop => self.pending_stop = None,
+            Message::CancelStop => {
+                self.pending_stop = None;
+                self.pending_runtime_stop = None;
+            }
             Message::AskRemove(model) if !self.busy => {
                 if self
                     .editors
@@ -711,6 +837,7 @@ impl cosmic::Application for Applet {
             Message::TogglePopup if self.mode == Mode::Panel => {
                 return if let Some(id) = self.popup.take() {
                     self.pending_stop = None;
+                    self.pending_runtime_stop = None;
                     destroy_popup(id)
                 } else {
                     let id = Id::unique();
@@ -732,6 +859,7 @@ impl cosmic::Application for Applet {
             Message::WindowClosed(id) if self.popup == Some(id) => {
                 self.popup = None;
                 self.pending_stop = None;
+                self.pending_runtime_stop = None;
             }
             _ => {}
         }
@@ -748,6 +876,15 @@ impl Applet {
         self.cancel_removal_review();
         self.downloads.selected = None;
         self.pending_close = true;
+        if let Some(editor) = &mut self.colibri_editor
+            && editor.dirty()
+            && !editor.saving
+        {
+            self.engine = 1;
+            editor.confirm_close = true;
+            self.core.set_show_context(true);
+            return Task::none();
+        }
         if let Some(id) = self
             .editors
             .iter()

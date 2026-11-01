@@ -3,9 +3,12 @@
 ## Scope and owners
 
 One runtime Rust package plus a repository-only source-check xtask. Native
-COSMIC views and a headless CLI share concrete runtime operations; there is no
-generic backend, application model database, compatibility adapter, or inference
-proxy.
+COSMIC views and a headless CLI share service-owned operations. Concrete engine
+integrations live under `engines`; there is no plugin framework, application
+model database, compatibility adapter, or inference proxy. Both llama.cpp and
+Colibri have explicit lifecycle operations; each retains its native settings and
+acquisition mechanism. See
+[engine boundaries](decisions/0008-engine-integrations.md).
 
 Arch packaging owns installation and updates; there is no custom installer or
 service-restart package hook. See
@@ -14,21 +17,28 @@ service-restart package hook. See
 ```text
 panel / native management application / CLI
     -> typed session D-Bus -> systemd user backend service
-        -> Controller -> Runtime -> loopback llama.cpp router
+        -> engines::llama_cpp::Controller -> Runtime -> loopback router
         -> native Presets / file watcher / bounded common snapshot
         -> service-owned operations / bounded operation history
         -> Process Compose host commands in an independent user scope
+        -> passive runtime inventory -> llama.cpp / Colibri native sources
+        -> cross-engine admission -> owned Colibri inference / acquisition scopes
     -> decorative artwork presentation inputs
 ```
 
 | Owner | Responsibility |
 | --- | --- |
-| `config` | Bounded native presets, hosting preferences, atomic edits, watcher |
+| `engines::llama_cpp::config` | Bounded native presets, hosting preferences, atomic edits, watcher |
 | `backend` | Typed D-Bus API/client, shared observations, service-owned operations |
-| `runtime` | Bounded router JSON transport; no process inspection or inference |
-| `downloads` | Public Hub inspection, acquisition receipts and digest checks |
-| `controller` | Fresh admission, shared operation lock, explicit load/unload |
-| `hosting` | Reviewed Process Compose daemon, private IPC/logs, router startup |
+| `runtime` | Engine-qualified runtime inventory records, not model readiness |
+| `controller` | Cross-engine fresh admission and configuration-race checks |
+| `hosting` | Shared limited Process Compose scope/UDS mechanism and locks |
+| `engines::inventory` | Passive discovery and independent per-engine results |
+| `engines::colibri` | Native setup, settings, owned lifecycle and native multi-file acquisition |
+| `engines::llama_cpp::runtime` | Bounded router JSON transport; no process inspection or inference |
+| `engines::llama_cpp::downloads` | Public Hub inspection, acquisition receipts and digest checks |
+| `engines::llama_cpp::controller` | Fresh native admission, operation lock, explicit load/unload |
+| `engines::llama_cpp::hosting` | Reviewed Process Compose daemon, private IPC/logs, router startup |
 | `model` | Profile and observed state values |
 | `icons` | Bounded decorative artwork loading and cache |
 | `regular_file` | Nonblocking open and descriptor-based regular-file validation |
@@ -39,7 +49,7 @@ The application, panel and CLI do not instantiate controllers, mutate native
 configuration, or call runtime/Hub management transport. See the
 [backend contract](decisions/0003-user-session-backend.md). Decorative artwork
 is a presentation input, not management authority. Each client call checks API
-version 1 against the unique bus owner receiving the requested method;
+version 2 against the unique bus owner receiving the requested method;
 owner loss fails the call without replaying it.
 
 Frontend startup additionally requests a coordinated update if the installed
@@ -51,6 +61,12 @@ the unchanged router. CLI observation remains passive. See
 [backend updates](decisions/0007-backend-update.md).
 
 ## Configuration authority
+
+The lifecycle, configuration and acquisition contracts below describe the
+llama.cpp integration. Colibri's native contract, private ownership and separate
+acquisition are specified in [Colibri](colibri.md) and
+[ADR 0008](decisions/0008-engine-integrations.md). Shared admission checks both
+connected engines before new model starts and acquisitions, without eviction.
 
 Native INI presets are the only model settings source. `server.json` specifies
 executable/library paths, working directory, native preset path, endpoint, and
@@ -129,6 +145,14 @@ retained without reload, unload or restart. Failures require a manual retry;
 timers and watcher events do not supervise or resurrect the host. The panel and
 CLI remain passive until an explicit action. See
 [startup and runtime dependencies](decisions/0006-runtime-startup.md).
+
+During admitted llama.cpp router startup, an abandoned `router.sock` left by a
+crash or reboot is removed only if Unix connection returns connection refused
+and the socket inode is unchanged. This runs under the private operation lock,
+after confirming the router TCP port is free. A live socket, timeout, inspection
+failure, symlink or non-socket file blocks startup without stopping anything.
+Status observations never remove sockets. Like configuration admission, this
+does not provide atomic isolation from independent external filesystem writers.
 
 ## Automatic native configuration
 

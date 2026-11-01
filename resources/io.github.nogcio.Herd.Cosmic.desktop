@@ -1,8 +1,8 @@
 [Desktop Entry]
 Name=Herd
 Name[ru]=Herd
-Comment=Load and unload local llama.cpp models
-Comment[ru]=Управление локальными моделями llama.cpp
+Comment=Load and unload local llama.cpp and Colibri models
+Comment[ru]=Управление локальными моделями llama.cpp и Colibri
 Type=Application
 Icon=io.github.nogcio.Herd.Cosmic
 Exec=herd-cosmic

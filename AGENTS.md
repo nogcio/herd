@@ -25,9 +25,12 @@ unchanged.
 - Target a standalone local model manager: a native libcosmic management window,
   a compact panel applet, and a non-interactive CLI with JSON output. Do not
   fork COSMIC Settings or build an extension layer for hypothetical integration.
-- Reuse llama.cpp router capabilities, native INI presets, configparser,
-  and reqwest. Do not create an inference runtime, inference
-  proxy, or generic process supervisor.
+- Keep concrete engine integrations under `engines`. Reuse llama.cpp router
+  capabilities, native INI presets, configparser and reqwest. Colibri uses its
+  native selected setup, catalogue and downloader APIs, with scoped host
+  ownership and cross-engine admission; follow
+  `docs/decisions/0008-engine-integrations.md`. Do not create an inference
+  runtime, inference proxy, plugin framework or generic process supervisor.
 - Run the shared management backend as a systemd user service with session
   D-Bus activation. Application, applet and CLI use its typed management API;
   no frontend bypasses it for configuration or runtime mutations. Keep the
@@ -45,9 +48,12 @@ unchanged.
   Separate model artifacts, runtime profiles, and observed instances;
   downloading a file does not establish compatibility, readiness, or a running
   model.
-- Native llama.cpp presets are the intended source of runtime configuration,
-  not systemd units. Do not maintain a second application-owned model registry
-  that duplicates the runtime's presets, cache, or model catalogue.
+- Native engine configuration is authoritative, not systemd units. llama.cpp
+  uses native INI presets; Colibri parses bounded native setup data and
+  reconstructs only reviewed literal serve options. Never execute command
+  strings from configuration. Do not maintain a second application-owned model
+  registry that duplicates native presets, cache or catalogues. Runtime
+  reachability does not establish readiness or ownership.
 - Reuse upstream downloads, cache, shards, sidecars, and progress where the
   verified runtime contract supports them. Do not build a duplicate downloader
   or redownload existing weights merely to register a model.

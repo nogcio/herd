@@ -1,5 +1,5 @@
 //! Read-only artifact resolution in the pinned native HF cache, never a registry.
-use crate::{
+use super::super::{
     config::{Presets, Settings, read_bounded},
     downloads::{Plan, validate_repo},
 };

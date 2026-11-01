@@ -218,7 +218,7 @@ fn catalogue(info: Info) -> Result<Catalogue> {
             "Hub supplied invalid GGUF size or SHA-256"
         );
         let model = format!("{}:{quant}", info.id);
-        if crate::config::validate_id(&model).is_err() {
+        if super::config::validate_id(&model).is_err() {
             continue;
         }
         plans.push(Plan {
@@ -262,7 +262,7 @@ pub fn validate_repo(repo: &str) -> Result<()> {
     Ok(())
 }
 fn split_model(model: &str) -> Result<(&str, String)> {
-    crate::config::validate_id(model)?;
+    super::config::validate_id(model)?;
     let (repo, quant) = model
         .split_once(':')
         .context("Download model IDs require namespace/repository:QUANT")?;
@@ -323,7 +323,7 @@ pub(crate) fn receipt(state: &Path, model: &str) -> Result<Option<Plan>> {
     if !path.exists() {
         return Ok(None);
     }
-    let plan: Plan = serde_json::from_str(&crate::config::read_bounded(&path)?).map_err(|_| {
+    let plan: Plan = serde_json::from_str(&super::config::read_bounded(&path)?).map_err(|_| {
         anyhow!("Invalid acquisition receipt; refusing to load unverified download")
     })?;
     ensure!(
@@ -408,7 +408,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         test_support::run(
-            "downloads::tests::verification_rejects_fifos_but_accepts_native_cache_symlinks",
+            "engines::llama_cpp::downloads::tests::verification_rejects_fifos_but_accepts_native_cache_symlinks",
             dir.path(),
         );
     }
@@ -449,7 +449,7 @@ mod tests {
         let plans = catalogue(boundary).unwrap().plans;
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].model.len(), 160);
-        assert!(crate::config::validate_id(&plans[0].model).is_ok());
+        assert!(super::super::config::validate_id(&plans[0].model).is_ok());
         assert!(split_model(&plans[0].model).is_ok());
 
         let mut oversized = info();

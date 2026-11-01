@@ -22,6 +22,10 @@ acquisition.
 
 ## Runtime contract
 
+This contract describes llama.cpp. The additional read-only Colibri integration
+and subsequent lifecycle boundaries are defined in
+[ADR 0008](0008-engine-integrations.md).
+
 The reference server is b11856, commit `3642238cc`; the
 [reviewed native documentation][server] and source define the API. Process
 Compose v1.122.0 supplies the reviewed hosting contract. Installed executable

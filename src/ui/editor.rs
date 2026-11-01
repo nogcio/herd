@@ -81,7 +81,7 @@ impl Editor {
             reload_confirmation: false,
             error: None,
             expanded: std::array::from_fn(|i| matches!(GROUPS[i].0, "group-context" | "group-gpu")),
-            field_ids: herd::config::OPTIONS
+            field_ids: herd::engines::llama_cpp::config::OPTIONS
                 .iter()
                 .map(|key| (*key, widget::Id::unique()))
                 .collect(),
@@ -1045,7 +1045,13 @@ mod tests {
     fn form_covers_every_supported_option_and_preserves_inherited_values() {
         let keys: std::collections::BTreeSet<_> =
             GROUPS.iter().flat_map(|(_, f)| f.iter().copied()).collect();
-        assert_eq!(keys, herd::config::OPTIONS.iter().copied().collect());
+        assert_eq!(
+            keys,
+            herd::engines::llama_cpp::config::OPTIONS
+                .iter()
+                .copied()
+                .collect()
+        );
         assert_eq!(
             keys.len(),
             GROUPS.iter().map(|(_, fields)| fields.len()).sum::<usize>()

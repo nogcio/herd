@@ -1,4 +1,4 @@
-//! Bounded native preset reads, atomic conflict-checked edits and file events.
+//! llama.cpp native preset reads, atomic conflict-checked edits and file events.
 use crate::{icons::IconSpec, model::Model};
 use anyhow::{Context, Result, anyhow, ensure};
 use configparser::ini::{Ini, IniDefault};
@@ -834,7 +834,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         test_support::run(
-            "config::tests::config_and_import_reject_fifos_without_waiting_for_a_writer",
+            "engines::llama_cpp::config::tests::config_and_import_reject_fifos_without_waiting_for_a_writer",
             dir.path(),
         );
     }

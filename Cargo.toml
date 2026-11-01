@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT"
-description = "Native COSMIC controls and CLI for a local llama.cpp router"
+description = "Native COSMIC controls and CLI for local llama.cpp and Colibri engines"
 readme = "README.md"
 repository = "https://github.com/nogcio/herd"
 homepage = "https://github.com/nogcio/herd"
@@ -73,7 +73,7 @@ sha2 = "0.11"
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "signal", "io-util"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 url = "2"
 cosmic = { package = "libcosmic", git = "https://github.com/pop-os/libcosmic", optional = true, default-features = false, features = ["applet", "a11y", "tokio", "wayland", "wgpu", "single-instance", "process", "xdg-portal"] }

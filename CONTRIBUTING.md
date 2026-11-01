@@ -1,6 +1,7 @@
 # Contributing
 
-Herd is an early-development local llama.cpp model manager with a COSMIC
+Herd is an early-development local model manager with concrete llama.cpp and
+Colibri integrations and a COSMIC
 frontend. Discuss new architectural boundaries, runtime authority, and
 distribution changes first. Keep source, fallback UI resources, documentation
 and diagnostics in English. Target-language Fluent resources and desktop
@@ -13,6 +14,8 @@ must not be translated.
 - The Rust version/components in `rust-toolchain.toml`; commit `Cargo.lock`.
 - Native libcosmic development libraries and `pkg-config`.
 - `dbus-daemon` for isolated IPC tests; no running desktop bus is required.
+- Python 3 for the bounded Colibri native API caller fixtures; no installed
+  Colibri or model weights are needed by tests.
 - `desktop-file-validate`/`desktop-file-install` and `appstreamcli` for native
   metadata.
 
